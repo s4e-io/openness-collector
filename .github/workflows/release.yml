@@ -1,0 +1,108 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve version from tag
+        id: ver
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "tag must be vX.Y.Z, got $TAG"; exit 1; }
+          VER="${TAG#v}"
+          FILE_VER="$(tr -d '[:space:]' <VERSION)"
+          if [[ "$VER" != "$FILE_VER" ]]; then
+            echo "tag version $VER does not match VERSION file $FILE_VER"
+            exit 1
+          fi
+          CODE_VER="$(sed -n 's/^[[:space:]]*Version = "\([^"]*\)"/\1/p' internal/version/version.go | head -1)"
+          test "$VER" = "$CODE_VER"
+          echo "version=$VER" >>"$GITHUB_OUTPUT"
+          echo "tag=$TAG" >>"$GITHUB_OUTPUT"
+
+      - name: Test (must pass before release)
+        run: go test ./...
+
+      - name: Build release binaries
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          COMMIT="${GITHUB_SHA}"
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          LDFLAGS="-s -w -X github.com/s4e-io/openness-collector/internal/version.Version=${VERSION} -X github.com/s4e-io/openness-collector/internal/version.Commit=${COMMIT} -X github.com/s4e-io/openness-collector/internal/version.Date=${DATE}"
+          mkdir -p dist
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "${LDFLAGS}" -o "dist/openness-collector_${VERSION}_linux_amd64" ./cmd/openness-collector
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "${LDFLAGS}" -o "dist/openness-collector_${VERSION}_linux_arm64" ./cmd/openness-collector
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "${LDFLAGS}" -o "dist/openness-collector_${VERSION}_windows_amd64.exe" ./cmd/openness-collector
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "${LDFLAGS}" -o "dist/openness-collector_${VERSION}_darwin_arm64" ./cmd/openness-collector
+          chmod +x dist/openness-collector_*_linux_* dist/openness-collector_*_darwin_*
+          ./dist/openness-collector_${VERSION}_linux_amd64 version | tee dist/version.txt
+          grep -F "openness-collector ${VERSION}" dist/version.txt
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum openness-collector_* > SHA256SUMS
+          cat SHA256SUMS
+
+      # Pin cosign CLI; installer @v3 may ship cosign v2 or v3 depending on release.
+      # Prefer detached signature+cert (portable); cosign v3 also supports --bundle.
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v4.1.2
+        with:
+          cosign-release: v2.4.3
+
+      - name: Sign checksums (keyless)
+        run: |
+          set -euo pipefail
+          cosign version
+          cosign sign-blob --yes \
+            --output-signature dist/SHA256SUMS.sig \
+            --output-certificate dist/SHA256SUMS.pem \
+            dist/SHA256SUMS
+          # Fail the release if the just-produced signature does not verify.
+          cosign verify-blob \
+            --certificate dist/SHA256SUMS.pem \
+            --signature dist/SHA256SUMS.sig \
+            --certificate-identity-regexp 'https://github.com/s4e-io/openness-collector/\.github/workflows/release\.yml@refs/tags/v.*' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            dist/SHA256SUMS
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: openness-collector ${{ steps.ver.outputs.version }}
+          generate_release_notes: true
+          files: |
+            dist/openness-collector_${{ steps.ver.outputs.version }}_linux_amd64
+            dist/openness-collector_${{ steps.ver.outputs.version }}_linux_arm64
+            dist/openness-collector_${{ steps.ver.outputs.version }}_windows_amd64.exe
+            dist/openness-collector_${{ steps.ver.outputs.version }}_darwin_arm64
+            dist/SHA256SUMS
+            dist/SHA256SUMS.sig
+            dist/SHA256SUMS.pem
+            dist/version.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,204 @@
+# software_inventory catalog: web servers, TLS, SSH, runtimes.
+products:
+  - product_key: nginx
+    vendor: f5
+    product: nginx
+    cpe_prefix: "cpe:2.3:a:f5:nginx"
+    platforms: [linux, windows]
+    verified: ["docker:nginx:1.27 (linux/arm64)"]
+    signals:
+      paths:
+        linux:
+          - "usr/sbin/nginx"
+          - "usr/local/nginx/sbin/nginx"
+          - "usr/local/openresty/nginx/sbin/nginx"
+        windows:
+          - "nginx*/nginx.exe"
+          - "Program Files/nginx*/nginx.exe"
+      process_names: ["nginx", "nginx.exe"]
+      ports: [80, 443]
+    version_readers:
+      - type: file_regex
+        path: "sbin/nginx"
+        pattern: 'nginx/([0-9]+\.[0-9]+\.[0-9]+)'
+        platforms: [linux]
+      - type: file_regex
+        path: "nginx.exe"
+        pattern: 'nginx/([0-9]+\.[0-9]+\.[0-9]+)'
+        platforms: [windows]
+
+  - product_key: apache-httpd
+    vendor: apache
+    product: http_server
+    cpe_prefix: "cpe:2.3:a:apache:http_server"
+    platforms: [linux, windows]
+    verified: ["docker:httpd:2.4 (linux/arm64)"]
+    signals:
+      paths:
+        linux:
+          - "usr/sbin/apache2"
+          - "usr/sbin/httpd"
+          - "usr/local/apache2/bin/httpd"
+        windows:
+          - "Apache24/bin/httpd.exe"
+          - "Program Files/Apache*/bin/httpd.exe"
+          - "Program Files/Apache Software Foundation/Apache*/bin/httpd.exe"
+      process_names: ["apache2", "httpd", "httpd.exe"]
+      ports: [80, 443]
+    version_readers:
+      - type: file_regex
+        path: "sbin/apache2"
+        pattern: 'Apache/([0-9]+\.[0-9]+\.[0-9]+)'
+        platforms: [linux]
+      - type: file_regex
+        path: "sbin/httpd"
+        pattern: 'Apache/([0-9]+\.[0-9]+\.[0-9]+)'
+        platforms: [linux]
+      - type: file_regex
+        path: "bin/httpd"
+        pattern: 'Apache/([0-9]+\.[0-9]+\.[0-9]+)'
+        platforms: [linux]
+      - type: file_regex
+        path: "bin/httpd.exe"
+        pattern: 'Apache/([0-9]+\.[0-9]+\.[0-9]+)'
+        platforms: [windows]
+      - type: pe_version
+        path: "bin/httpd.exe"
+        platforms: [windows]
+
+  - product_key: apache-tomcat
+    vendor: apache
+    product: tomcat
+    cpe_prefix: "cpe:2.3:a:apache:tomcat"
+    platforms: [linux, windows]
+    verified: ["docker:tomcat:10-jre17 (linux/arm64)"]
+    signals:
+      paths:
+        linux:
+          - "opt/tomcat*"
+          - "opt/apache-tomcat*"
+          - "usr/local/tomcat*"
+          - "usr/share/tomcat*"
+          - "var/lib/tomcat*"
+        windows:
+          - "Program Files/Apache Software Foundation/Tomcat *"
+          - "Program Files/Tomcat*"
+          - "Tomcat*"
+      ports: [8080, 8443]
+    version_readers:
+      - type: zip_entry_regex
+        path: "lib/catalina.jar"
+        value: "org/apache/catalina/util/ServerInfo.properties"
+        pattern: 'server\.number=([0-9]+\.[0-9]+\.[0-9]+)'
+      - type: file_regex
+        path: "RELEASE-NOTES"
+        pattern: 'Apache Tomcat Version ([0-9]+\.[0-9]+\.[0-9]+)'
+        max_bytes: 1048576
+
+  - product_key: openssl
+    vendor: openssl
+    product: openssl
+    cpe_prefix: "cpe:2.3:a:openssl:openssl"
+    platforms: [linux, windows]
+    verified:
+      - "docker:alpine:3.20 openssl 3.3.7 (linux/arm64)"
+      - "github ubuntu-24.04 runner libcrypto 3.0.13"
+      - "github windows-2025 runner OpenSSL 3.6.5 (libcrypto-*.dll)"
+    signals:
+      paths:
+        linux:
+          - "usr/lib/*/libcrypto.so.*"
+          - "usr/lib64/libcrypto.so.*"
+          - "usr/lib/libcrypto.so.*"
+          - "lib/libcrypto.so.*"
+          - "usr/local/lib/libcrypto.so.*"
+          - "usr/local/lib64/libcrypto.so.*"
+          - "usr/local/ssl/lib*/libcrypto.so*"
+        windows:
+          - "Program Files/OpenSSL*/bin/libcrypto-*.dll"
+          - "Program Files/OpenSSL*/libcrypto-*.dll"
+          - "Program Files (x86)/OpenSSL*/bin/libcrypto-*.dll"
+    version_readers:
+      # OPENSSL_VERSION_TEXT lives in libcrypto, e.g. "OpenSSL 3.3.7 7 Apr 2026".
+      - type: file_regex
+        path: "libcrypto.so.*"
+        pattern: 'OpenSSL ([0-9]+\.[0-9]+\.[0-9]+[a-z]*) +[0-9]{1,2} [A-Z][a-z]{2} [0-9]{4}'
+        platforms: [linux]
+      - type: file_regex
+        path: "libcrypto-*.dll"
+        pattern: 'OpenSSL ([0-9]+\.[0-9]+\.[0-9]+[a-z]*) +[0-9]{1,2} [A-Z][a-z]{2} [0-9]{4}'
+        platforms: [windows]
+      - type: file_regex
+        path: "bin/libcrypto-*.dll"
+        pattern: 'OpenSSL ([0-9]+\.[0-9]+\.[0-9]+[a-z]*) +[0-9]{1,2} [A-Z][a-z]{2} [0-9]{4}'
+        platforms: [windows]
+
+  - product_key: openssh-server
+    vendor: openbsd
+    product: openssh
+    cpe_prefix: "cpe:2.3:a:openbsd:openssh"
+    platforms: [linux, windows]
+    verified:
+      - "docker:alpine:3.20 openssh-server 9.7p1 (linux/arm64)"
+      - "github ubuntu-24.04 runner openssh-server 9.6p1 (SSH_RELEASE with ' Ubuntu-' suffix)"
+      - "github windows-2025 runner Win32-OpenSSH (pe_version; file_regex compat strings rejected)"
+    signals:
+      paths:
+        linux:
+          - "usr/sbin/sshd"
+          - "usr/local/sbin/sshd"
+        windows:
+          - "Windows/System32/OpenSSH/sshd.exe"
+          - "Program Files/OpenSSH*/sshd.exe"
+      process_names: ["sshd", "sshd.exe"]
+      ports: [22]
+    version_readers:
+      # SSH_RELEASE literal is "OpenSSH_9.7p1" followed by NUL, or by a space on
+      # Debian/Ubuntu ("OpenSSH_9.6p1 Ubuntu-3ubuntu13.5"). compat.c also embeds
+      # client patterns such as "OpenSSH_3.0*" and "OpenSSH_2.5.0p1*"; the
+      # mandatory pN plus the terminator rejects those.
+      - type: file_regex
+        path: "sbin/sshd"
+        pattern: 'OpenSSH_([0-9]+\.[0-9]+p[0-9]+)[ \x00]'
+        platforms: [linux]
+      - type: pe_version
+        path: "sshd.exe"
+        platforms: [windows]
+      - type: file_regex
+        path: "sshd.exe"
+        pattern: 'OpenSSH_for_Windows_([0-9]+\.[0-9]+(?:p[0-9]+)?)'
+        platforms: [windows]
+
+  - product_key: java-runtime
+    vendor: oracle
+    product: jdk
+    cpe_prefix: "cpe:2.3:a:oracle:jdk"
+    platforms: [linux, windows]
+    verified: ["docker:tomcat:10-jre17 Temurin release file (linux/arm64)"]
+    signals:
+      paths:
+        linux:
+          - "usr/lib/jvm/*/release"
+          - "opt/java/*/release"
+          - "usr/java/*/release"
+          - "opt/jdk*/release"
+          - "opt/openjdk*/release"
+        windows:
+          - "Program Files/Java/*/release"
+          - "Program Files/Eclipse Adoptium/*/release"
+          - "Program Files/Eclipse Foundation/*/release"
+          - "Program Files/Microsoft/jdk*/release"
+          - "Program Files/Amazon Corretto/*/release"
+          - "Program Files/Zulu/*/release"
+          - "Program Files/BellSoft/*/release"
+          - "Program Files (x86)/Java/*/release"
+      process_names: ["java", "javaw", "java.exe", "javaw.exe"]
+    version_readers:
+      - type: file_regex
+        path: "release"
+        pattern: 'JAVA_VERSION="([^"]+)"'
+        max_bytes: 65536
+      - type: file_regex
+        path: "release"
+        pattern: 'IMPLEMENTOR_VERSION="([^"]+)"'
+        max_bytes: 65536

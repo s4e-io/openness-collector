@@ -1,0 +1,24 @@
+config_version: "1.0"
+
+collection:
+  timeout_seconds: 900
+  module_timeout_seconds: 180
+  keep_raw_evidence: true
+
+# Leave modules empty/omitted to run every module for the current OS.
+# To allowlist, set true for each module id, for example:
+# modules:
+#   os_inventory: true
+#   packages: true
+#   evidence_chain: true
+
+output:
+  path: "./output.openness"
+  compression: ""
+
+upload:
+  enabled: false
+  api_url: ""
+  api_key_env: "OPENNESS_API_KEY"
+  preserve_local_file: true
+  allow_insecure_upload: false

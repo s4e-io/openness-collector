@@ -1,0 +1,199 @@
+name: nightly
+
+# Every night the collector is checked against today's world: fresh distro images (point
+# releases and package updates land without a code change), more distro versions and runner
+# images than the PR checks cover, and the latest published release binary. A scheduled run
+# that fails opens (or comments on) one issue labelled "nightly"; the next green run closes it.
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths: [.github/workflows/nightly.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    name: host-${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04, windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build collector and checker
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE="${{ runner.os == 'Windows' && '.exe' || '' }}"
+          go build -o "bin/openness-collector${EXE}" ./cmd/openness-collector
+          go build -o "bin/hostcheck${EXE}" ./tools/hostcheck
+
+      - name: hostcheck (Linux, as root)
+        if: runner.os == 'Linux'
+        run: |
+          sudo ./bin/hostcheck -bin ./bin/openness-collector -user "$USER" \
+            -work "$RUNNER_TEMP/hostcheck" -label "${{ matrix.os }}" -summary "$GITHUB_STEP_SUMMARY"
+
+      - name: hostcheck (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          ./bin/hostcheck.exe -bin ./bin/openness-collector.exe \
+            -work "$RUNNER_TEMP/hostcheck" -label "${{ matrix.os }}" -summary "$GITHUB_STEP_SUMMARY"
+
+  distro:
+    name: distro-${{ matrix.image }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - ubuntu:20.04
+          - ubuntu:22.04
+          - ubuntu:24.04
+          - debian:11
+          - debian:12
+          - debian:13
+          - rockylinux/rockylinux:8
+          - rockylinux/rockylinux:9
+          - almalinux:8
+          - almalinux:9
+          - amazonlinux:2
+          - amazonlinux:2023
+          - opensuse/leap:15
+          - alpine:3.20
+          - alpine:3.21
+          - alpine:3.22
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build static collector and checker
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 go build -o bin/openness-collector ./cmd/openness-collector
+          CGO_ENABLED=0 go build -o bin/hostcheck ./tools/hostcheck
+
+      # --pull always: tonight's image, not a cached one.
+      - name: hostcheck in ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          docker run --rm --pull always -v "$PWD/bin:/w:ro" -v "$PWD/out:/out" "${{ matrix.image }}" \
+            /w/hostcheck -bin /w/openness-collector -work /tmp/hostcheck -user root \
+            -label "${{ matrix.image }}" -summary /out/summary.md
+
+      - name: Summary
+        if: always()
+        run: cat out/summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+
+  # The binary users download: the latest release, checked on Linux and Windows.
+  release:
+    name: release-${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download the latest release and verify SHA256SUMS
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$(gh release view -R "$GITHUB_REPOSITORY" --json tagName -q .tagName)"
+          ver="${tag#v}"
+          os="${{ runner.os == 'Windows' && 'windows' || 'linux' }}"
+          exe="${{ runner.os == 'Windows' && '.exe' || '' }}"
+          mkdir -p rel && cd rel
+          gh release download "$tag" -R "$GITHUB_REPOSITORY" -p SHA256SUMS
+          # Releases before the rename are named openness_<version>_<os>_<arch>.
+          asset="openness-collector_${ver}_${os}_amd64${exe}"
+          gh release download "$tag" -R "$GITHUB_REPOSITORY" -p "$asset" || {
+            asset="openness_${ver}_${os}_amd64${exe}"
+            gh release download "$tag" -R "$GITHUB_REPOSITORY" -p "$asset"
+          }
+          grep " ${asset}\$" SHA256SUMS | sha256sum -c -
+          mv "$asset" "openness-collector${exe}"
+          chmod +x "openness-collector${exe}"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "### Latest release $tag ($asset)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build checker
+        shell: bash
+        run: go build -o "bin/hostcheck${{ runner.os == 'Windows' && '.exe' || '' }}" ./tools/hostcheck
+
+      # The checker of this commit may expect more than an older release has; the release
+      # must still collect, validate and inspect its own evidence.
+      - name: Smoke the release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe="${{ runner.os == 'Windows' && '.exe' || '' }}"
+          sudo_="${{ runner.os == 'Linux' && 'sudo' || '' }}"
+          ./rel/openness-collector${exe} version
+          $sudo_ ./rel/openness-collector${exe} collect --output "$RUNNER_TEMP/host.openness"
+          $sudo_ ./rel/openness-collector${exe} validate "$RUNNER_TEMP/host.openness"
+          $sudo_ ./rel/openness-collector${exe} inspect "$RUNNER_TEMP/host.openness" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  report:
+    name: report
+    if: always() && github.event_name == 'schedule'
+    needs: [host, distro, release]
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open, update or close the nightly issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh label create nightly -R "$GITHUB_REPOSITORY" --color B60205 --description "Nightly test failures" 2>/dev/null || true
+          open="$(gh issue list -R "$GITHUB_REPOSITORY" --label nightly --state open --json number -q '.[0].number')"
+          if [ "$FAILED" = "true" ]; then
+            if [ -n "$open" ]; then
+              gh issue comment "$open" -R "$GITHUB_REPOSITORY" --body "Still failing on $(date -u +%F): $RUN"
+            else
+              gh issue create -R "$GITHUB_REPOSITORY" --label nightly --title "nightly: $(date -u +%F) failed" \
+                --body "The nightly collector checks failed: $RUN"
+            fi
+          elif [ -n "$open" ]; then
+            gh issue close "$open" -R "$GITHUB_REPOSITORY" --comment "Green again on $(date -u +%F): $RUN"
+          fi

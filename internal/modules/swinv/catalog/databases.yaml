@@ -1,0 +1,221 @@
+# software_inventory catalog: database servers.
+#
+# Rules for every entry:
+# - signals only observe (paths, process names, registry keys, ports);
+# - version_readers only read files/registry; no product binary is executed;
+# - `verified` lists the real installs the readers were exercised against.
+#   An empty list means the entry follows vendor documentation and is not yet
+#   proven; the README marks such entries.
+products:
+  - product_key: oracle-database
+    vendor: oracle
+    product: database_server
+    cpe_prefix: "cpe:2.3:a:oracle:database_server"
+    platforms: [linux, windows]
+    verified: []
+    signals:
+      paths:
+        linux:
+          - "u01/app/oracle/product/*/*"
+          - "opt/oracle/product/*/*"
+          - "u01/app/*/product/*/*"
+        windows:
+          - "app/*/product/*/*"
+          - "oracle/product/*/*"
+      process_names: ["oracle", "ora_pmon_*", "tnslsnr", "oracle.exe", "tnslsnr.exe"]
+      ports: [1521]
+      registry:
+        - key: 'HKLM\SOFTWARE\ORACLE\KEY_*'
+          install_path_value: ORACLE_HOME
+    version_readers:
+      # Local OUI inventory inside ORACLE_HOME (documented layout, unverified).
+      - type: file_regex
+        path: "inventory/ContentsXML/comps.xml"
+        pattern: '<COMP NAME="oracle\.server" VER="([0-9][0-9.]+)"'
+        max_bytes: 8388608
+      - type: file_regex
+        path: "inventory/ContentsXML/comps.xml"
+        pattern: '<COMP NAME="oracle\.rdbms" VER="([0-9][0-9.]+)"'
+        max_bytes: 8388608
+    patch_readers:
+      - type: dir_names
+        path: "inventory/oneoffs/*"
+        pattern: '^([0-9]{6,})$'
+      - type: dir_names
+        path: ".patch_storage/*"
+        pattern: '^([0-9]{6,})_'
+
+  - product_key: postgresql
+    vendor: postgresql
+    product: postgresql
+    cpe_prefix: "cpe:2.3:a:postgresql:postgresql"
+    platforms: [linux, windows]
+    verified:
+      - "docker:postgres:16 16.15 (linux/arm64)"
+      - "github ubuntu-24.04 runner PostgreSQL 16.15"
+      - "github windows-2025 runner PostgreSQL 17 (registry Installations Version=17.11-5)"
+    signals:
+      paths:
+        linux:
+          - "usr/lib/postgresql/*/bin/postgres"
+          - "usr/pgsql-*/bin/postgres"
+          - "usr/local/pgsql/bin/postgres"
+          - "opt/postgresql/*/bin/postgres"
+        windows:
+          - "Program Files/PostgreSQL/*"
+      process_names: ["postgres", "postmaster", "postgres.exe"]
+      ports: [5432]
+      registry:
+        - key: 'HKLM\SOFTWARE\PostgreSQL\Installations\*'
+          install_path_value: "Base Directory"
+    version_readers:
+      - type: registry_value
+        value: Version
+        platforms: [windows]
+      - type: file_regex
+        path: "bin/postgres"
+        pattern: 'PostgreSQL ([0-9]+\.[0-9]+(?:\.[0-9]+)?) \('
+        platforms: [linux]
+      - type: file_regex
+        path: "bin/postgres.exe"
+        pattern: 'PostgreSQL ([0-9]+\.[0-9]+(?:\.[0-9]+)?)[ ,]'
+        platforms: [windows]
+      - type: pe_version
+        path: "bin/postgres.exe"
+        platforms: [windows]
+
+  - product_key: mysql-server
+    vendor: oracle
+    product: mysql
+    cpe_prefix: "cpe:2.3:a:oracle:mysql"
+    platforms: [linux, windows]
+    verified:
+      - "docker:mysql:8 8.4.13 (linux/arm64)"
+      - "github windows-2025 runner MySQL Server 8.0 (registry Version=8.0.46)"
+      - "github ubuntu-24.04 runner distro mysqld: presence_only as documented"
+    signals:
+      paths:
+        linux:
+          - "usr/sbin/mysqld"
+          - "usr/local/mysql/bin/mysqld"
+        windows:
+          - "Program Files/MySQL/MySQL Server *"
+      process_names: ["mysqld", "mysqld.exe"]
+      ports: [3306]
+      registry:
+        - key: 'HKLM\SOFTWARE\MySQL AB\MySQL Server *'
+          install_path_value: Location
+    version_readers:
+      - type: registry_value
+        value: Version
+        platforms: [windows]
+      # Official builds embed their source tree path (mysql-8.4.13/...).
+      - type: file_regex
+        path: "sbin/mysqld"
+        pattern: 'mysql-([0-9]+\.[0-9]+\.[0-9]+)/'
+        platforms: [linux]
+      - type: file_regex
+        path: "bin/mysqld"
+        pattern: 'mysql-([0-9]+\.[0-9]+\.[0-9]+)/'
+        platforms: [linux]
+      - type: pe_version
+        path: "bin/mysqld.exe"
+        platforms: [windows]
+
+  - product_key: mariadb-server
+    vendor: mariadb
+    product: mariadb
+    cpe_prefix: "cpe:2.3:a:mariadb:mariadb"
+    platforms: [linux, windows]
+    verified: ["docker:mariadb:11 (linux/arm64)"]
+    signals:
+      paths:
+        linux:
+          - "usr/sbin/mariadbd"
+        windows:
+          - "Program Files/MariaDB *"
+      process_names: ["mariadbd", "mariadbd.exe"]
+      ports: [3306]
+    version_readers:
+      - type: file_regex
+        path: "sbin/mariadbd"
+        pattern: '([0-9]+\.[0-9]+\.[0-9]+)-MariaDB'
+        platforms: [linux]
+      - type: file_regex
+        path: "bin/mariadbd.exe"
+        pattern: '([0-9]+\.[0-9]+\.[0-9]+)-MariaDB'
+        platforms: [windows]
+      - type: pe_version
+        path: "bin/mariadbd.exe"
+        platforms: [windows]
+
+  - product_key: microsoft-sql-server
+    vendor: microsoft
+    product: sql_server
+    cpe_prefix: "cpe:2.3:a:microsoft:sql_server"
+    platforms: [windows]
+    # Registry CurrentVersion reader exercised on a LocalDB instance only
+    # (MSSQL17E.LOCALDB, 17.0.4025.3). Full engine path/Setup readers unproven.
+    verified: ["github windows-2025 runner SQL Server LocalDB (registry CurrentVersion)"]
+    signals:
+      paths:
+        windows:
+          - "Program Files/Microsoft SQL Server/MSSQL*.*/MSSQL"
+      process_names: ["sqlservr.exe"]
+      ports: [1433]
+      registry:
+        - key: 'HKLM\SOFTWARE\Microsoft\Microsoft SQL Server\MSSQL*'
+    version_readers:
+      - type: registry_value
+        path: 'MSSQLServer\CurrentVersion'
+        value: CurrentVersion
+      - type: registry_value
+        path: 'Setup'
+        value: PatchLevel
+      - type: pe_version
+        path: "Binn/sqlservr.exe"
+
+  - product_key: redis
+    vendor: redis
+    product: redis
+    cpe_prefix: "cpe:2.3:a:redis:redis"
+    platforms: [linux]
+    verified: ["docker:redis:7 (linux/arm64)"]
+    signals:
+      paths:
+        linux:
+          - "usr/bin/redis-server"
+          - "usr/local/bin/redis-server"
+      process_names: ["redis-server", "valkey-server"]
+      ports: [6379]
+    version_readers:
+      # release.c embeds REDIS_VERSION followed by the build id
+      # (<hostname>-<nanotime>), e.g. "7.4.11buildkitsandbox-1792543350000000000".
+      - type: file_regex
+        path: "bin/redis-server"
+        pattern: '([0-9]+\.[0-9]+\.[0-9]+)[A-Za-z0-9._-]{1,80}-[0-9]{10,19}\x00'
+
+  - product_key: mongodb
+    vendor: mongodb
+    product: mongodb
+    cpe_prefix: "cpe:2.3:a:mongodb:mongodb"
+    platforms: [linux, windows]
+    # Linux: mongod carries its version only as a bare string among many other
+    # NUL-delimited semvers (ICU, curl), so no file reader is honest here.
+    # Host installs come from mongodb-org packages; the packages module has
+    # the version. The instance is still reported (presence, listener, process).
+    verified:
+      - "docker:mongo:7 presence (linux/arm64)"
+      - "github windows-2025 runner MongoDB 7.0 (pe_version mongod.exe=7.0.45.0)"
+    signals:
+      paths:
+        linux:
+          - "usr/bin/mongod"
+        windows:
+          - "Program Files/MongoDB/Server/*"
+      process_names: ["mongod", "mongod.exe"]
+      ports: [27017]
+    version_readers:
+      - type: pe_version
+        path: "bin/mongod.exe"
+        platforms: [windows]

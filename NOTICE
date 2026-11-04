@@ -1,0 +1,41 @@
+openness-collector
+Copyright 2026 S4E (Security For Everyone), https://s4e.io
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+Openness is developed and maintained by S4E (Security For Everyone).
+
+This distribution includes third-party software. Licenses below are summaries;
+full texts are available at the linked URLs and in module source trees.
+
+------------------------------------------------------------------------------
+github.com/spf13/cobra and github.com/inconshreveable/mousetrap
+License: Apache License 2.0
+https://github.com/spf13/cobra/blob/main/LICENSE.txt
+https://www.apache.org/licenses/LICENSE-2.0
+
+------------------------------------------------------------------------------
+github.com/spf13/pflag
+License: BSD-3-Clause
+https://github.com/spf13/pflag/blob/master/LICENSE
+
+------------------------------------------------------------------------------
+github.com/pierrec/lz4/v4
+License: BSD-3-Clause
+https://github.com/pierrec/lz4/blob/master/LICENSE
+
+------------------------------------------------------------------------------
+golang.org/x/sys
+License: BSD-3-Clause
+https://cs.opensource.google/go/x/sys
+
+------------------------------------------------------------------------------
+gopkg.in/yaml.v3
+License: MIT and Apache License 2.0 (dual; see upstream NOTICE)
+https://github.com/go-yaml/yaml/tree/v3.0.1
+The following files from the go-yaml fork retain their original Apache-2.0
+copyright notices where applicable; the remainder is MIT.
+
+------------------------------------------------------------------------------
+Go standard library (toolchain)
+License: BSD-3-Clause
+https://golang.org/LICENSE

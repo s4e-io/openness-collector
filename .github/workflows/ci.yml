@@ -1,0 +1,277 @@
+name: ci
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          set -euo pipefail
+          bad="$(gofmt -l $(find . -name '*.go' -not -path './vendor/*'))"
+          if [[ -n "$bad" ]]; then
+            echo "gofmt needed on:"
+            echo "$bad"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Version + schema consistency
+        run: |
+          set -euo pipefail
+          FILE_VER="$(tr -d '[:space:]' <VERSION)"
+          CODE_VER="$(sed -n 's/^[[:space:]]*Version = "\([^"]*\)"/\1/p' internal/version/version.go | head -1)"
+          SCHEMA="$(sed -n 's/^const SchemaVersion = "\([^"]*\)"/\1/p' internal/schema/document.go | head -1)"
+          echo "VERSION=${FILE_VER} version.go=${CODE_VER} schema=${SCHEMA}"
+          test "$FILE_VER" = "$CODE_VER"
+          test -n "$SCHEMA"
+          grep -F "$SCHEMA" README.md >/dev/null
+          grep -F "$SCHEMA" docs/KNOWN_LIMITATIONS.md >/dev/null
+          grep -F "$SCHEMA" docs/PROMPTS.md >/dev/null
+          # README / KNOWN_LIMITATIONS collector version must match VERSION.
+          README_VER="$(sed -n 's/^Version: \*\*\([0-9.]*\)\*\*.*/\1/p' README.md | head -1)"
+          echo "README Version=${README_VER}"
+          test -n "$README_VER"
+          test "$FILE_VER" = "$README_VER"
+          KL_VER="$(sed -n 's/.*collector \*\*\([0-9.]*\)\*\*.*/\1/p' docs/KNOWN_LIMITATIONS.md | head -1)"
+          echo "KNOWN_LIMITATIONS collector=${KL_VER}"
+          test -n "$KL_VER"
+          test "$FILE_VER" = "$KL_VER"
+
+  # Hard gate since Go 1.26.10: stdlib and module findings fail the build.
+  vuln:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: govulncheck
+        run: |
+          set -euo pipefail
+          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+  test:
+    name: test-${{ matrix.os }}
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test ./...
+
+  # Real collect on each runner OS. Prints per-module durations and what
+  # software_inventory detected; the evidence file itself is never uploaded.
+  smoke:
+    name: smoke-${{ matrix.os }}
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        shell: bash
+        run: go build -o ./openness-smoke ./cmd/openness-collector
+
+      - name: Collect and validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          ./openness-smoke collect --output smoke.openness --timeout 600 --module-timeout 180
+          end=$(date +%s)
+          echo "wall_clock_seconds=$((end-start))"
+          ./openness-smoke validate smoke.openness
+
+      - name: Report timings and detected software
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "## collect on ${{ matrix.os }}" >> "$GITHUB_STEP_SUMMARY"
+          jq -r '"total_ms=\(.collection.duration_ms) status=\(.collection.status) privilege=\(.collection.privilege_level) os=\(.operating_system.pretty_name // .operating_system.product_name // "n/a")"' smoke.openness | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| module | status | ms | records |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          jq -r '.modules[] | "| \(.module_id) | \(.status) | \(.duration_ms) | \(.records) |"' smoke.openness | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "software_inventory:" | tee -a "$GITHUB_STEP_SUMMARY"
+          jq -r '(.software_inventory // [])[] | .value | select(.entity_type=="software_instance") | "- \(.product_key) version=\(.version // "null") confidence=\(.confidence) path=\(.install_path // "null") running=\(.running)"' smoke.openness | tee -a "$GITHUB_STEP_SUMMARY"
+          rm -f smoke.openness
+
+  # End-to-end on the runner itself: tools/hostcheck runs every command and
+  # compares the evidence with the host's own tools (os-release, uname, the
+  # package database, Get-CimInstance, Get-HotFix, the uninstall registry).
+  e2e-host:
+    name: e2e-${{ matrix.os }}
+    needs: lint
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build collector and checker
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE="${{ runner.os == 'Windows' && '.exe' || '' }}"
+          go build -o "bin/openness-collector${EXE}" ./cmd/openness-collector
+          go build -o "bin/hostcheck${EXE}" ./tools/hostcheck
+
+      # Root gives the collector the socket-to-PID map and the full package view.
+      - name: hostcheck (Linux, as root)
+        if: runner.os == 'Linux'
+        run: |
+          sudo ./bin/hostcheck -bin ./bin/openness-collector -user "$USER" \
+            -work "$RUNNER_TEMP/hostcheck" -label ubuntu-latest -summary "$GITHUB_STEP_SUMMARY"
+
+      - name: hostcheck (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          ./bin/hostcheck.exe -bin ./bin/openness-collector.exe \
+            -work "$RUNNER_TEMP/hostcheck" -label windows-latest -summary "$GITHUB_STEP_SUMMARY"
+
+  # Same checks inside a container of each supported distro: distro fields and
+  # the package list are compared with that distro's own package database.
+  e2e-distro:
+    name: e2e-${{ matrix.image }}
+    needs: lint
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - ubuntu:20.04
+          - ubuntu:22.04
+          - ubuntu:24.04
+          - debian:12
+          - rockylinux/rockylinux:9
+          - almalinux:9
+          - amazonlinux:2023
+          - opensuse/leap:15
+          - alpine:3.20
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build static collector and checker
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 go build -o bin/openness-collector ./cmd/openness-collector
+          CGO_ENABLED=0 go build -o bin/hostcheck ./tools/hostcheck
+
+      - name: hostcheck in ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          docker run --rm -v "$PWD/bin:/w:ro" -v "$PWD/out:/out" "${{ matrix.image }}" \
+            /w/hostcheck -bin /w/openness-collector -work /tmp/hostcheck -user root \
+            -label "${{ matrix.image }}" -summary /out/summary.md
+
+      - name: Summary
+        if: always()
+        run: cat out/summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+
+  build-linux:
+    name: build-linux
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build release matrix binaries
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' <VERSION)"
+          COMMIT="${GITHUB_SHA}"
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          LDFLAGS="-s -w -X github.com/s4e-io/openness-collector/internal/version.Version=${VERSION} -X github.com/s4e-io/openness-collector/internal/version.Commit=${COMMIT} -X github.com/s4e-io/openness-collector/internal/version.Date=${DATE}"
+          mkdir -p dist
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "${LDFLAGS}" -o dist/openness-collector_${VERSION}_linux_amd64 ./cmd/openness-collector
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "${LDFLAGS}" -o dist/openness-collector_${VERSION}_linux_arm64 ./cmd/openness-collector
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "${LDFLAGS}" -o dist/openness-collector_${VERSION}_windows_amd64.exe ./cmd/openness-collector
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "${LDFLAGS}" -o dist/openness-collector_${VERSION}_darwin_arm64 ./cmd/openness-collector
+          ./dist/openness-collector_${VERSION}_linux_amd64 version
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: openness-matrix-${{ github.sha }}
+          path: |
+            dist/openness-collector_*
+          if-no-files-found: error

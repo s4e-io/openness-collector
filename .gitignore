@@ -1,0 +1,51 @@
+# Build artifacts
+/dist/
+/bin/
+*.exe
+
+# Local evidence / smoke outputs (may contain host secrets)
+/output/
+/out/
+/tmp/
+*.openness
+*.openness.gz
+!testdata/**/*.openness
+
+# Lab / overnight agent board (not for public consumers)
+/overnight/
+/packs/
+/schema/
+
+# Local credentials
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+**/credentials.json
+
+# Local agent instructions
+.claude
+.claude/
+
+# Logs and reports
+*.log
+*.log.*
+coverage.out
+coverage.html
+*.coverprofile
+*.prof
+*.test
+/reports/
+**/reports/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Go
+/vendor/
