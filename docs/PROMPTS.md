@@ -13,18 +13,18 @@ Paste the sections below into a chat so the assistant understands the project be
 
 **Openness** splits endpoint security into two deterministic steps:
 
-1. **Collector (this repo)** — gather facts from the local machine.
-2. **Resolver (separate repo)** — compare facts to vendor advisories and emit findings.
+1. **Collector (this repo)**, gather facts from the local machine.
+2. **Resolver (separate repo)**, compare facts to vendor advisories and emit findings.
 
 This repo answers: *“What is installed and running on this host, with proof?”*  
-It does **not** answer: *“Is this CVE exploitable here?”* — that is the resolver’s job.
+It does **not** answer: *“Is this CVE exploitable here?”*, that is the resolver’s job.
 
 Design goals:
 
-- **Deterministic** — same host state → same `.openness` file (modulo timestamps).
-- **Honest** — unknown data stays unknown; gaps are explicit, never invented.
-- **Offline-first** — collect once, validate and inspect without network.
-- **Resolver-ready** — entity IDs, evidence chains, and source-package mapping so the resolver does not guess.
+- **Deterministic**, same host state → same `.openness` file (modulo timestamps).
+- **Honest**, unknown data stays unknown; gaps are explicit, never invented.
+- **Offline-first**, collect once, validate and inspect without network.
+- **Resolver-ready**, entity IDs, evidence chains, and source-package mapping so the resolver does not guess.
 
 **Runtime: no AI.** LLMs may help write code; the collector binary never calls them.
 
@@ -113,7 +113,7 @@ Windows: separate module set under `internal/modules/windows/` (applications, CB
 
 ## Honesty rules (do not break these in PRs)
 
-From README §9 — summary:
+From README §9, summary:
 
 - Only record what was **read** from the system, not inferred CVE impact.
 - Evidence chains list explicit hops; a missing hop → incomplete chain.

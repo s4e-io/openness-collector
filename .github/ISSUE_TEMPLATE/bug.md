@@ -17,4 +17,4 @@ title: "[bug] "
 **OS** (e.g. Ubuntu 22.04, Windows Server 2022)
 
 
-**Anything else?** (optional — please no secrets or production host data)
+**Anything else?** (optional, please no secrets or production host data)

@@ -14,7 +14,7 @@ We are transparent about tooling:
 
 If you use AI while contributing, you remain responsible for the change: read the diff, run tests, and ensure no secrets or host-specific data are committed.
 
-**Using Cursor / Claude / Copilot?** Paste context from [docs/PROMPTS.md](docs/PROMPTS.md) — project purpose, pipeline, schema/modules, and copy-paste prompts.
+**Using Cursor / Claude / Copilot?** Paste context from [docs/PROMPTS.md](docs/PROMPTS.md), project purpose, pipeline, schema/modules, and copy-paste prompts.
 
 ## Before you start
 

@@ -7,6 +7,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-04
+
 ### Changed
 
 - **Breaking for downloaders:** the tool is now called `openness-collector`. The command (`openness-collector --help`), `go install` path (`./cmd/openness-collector`), `scripts/build.sh` output and the release assets are `openness-collector_<version>_<os>_<arch>` (`.exe` on Windows) instead of `openness_<version>_...`. `version` prints `openness-collector <version> schema=<schema>`. The evidence field `collector.name` stays `openness`, and saved credentials stay in `~/.config/openness/`.
