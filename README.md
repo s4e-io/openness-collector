@@ -1,10 +1,11 @@
-# openness-collector
+# OpenNess Vulnerability Scanner: Collector
 
-Local endpoint evidence collector. It reads the machine it runs on and writes one JSON
-evidence file (`.openness`) with the operating system, packages, applications, updates,
-services, processes, listening ports, users, security settings and the links between them.
+`openness-collector` is the local endpoint evidence collector of OpenNess Vulnerability
+Scanner. It reads the machine it runs on and writes one JSON evidence file (`.openness`)
+with the operating system, packages, applications, updates, services, processes, listening
+ports, users, security settings and the links between them.
 
-**Openness project:** [github.com/s4e-io/openness](https://github.com/s4e-io/openness)  
+**OpenNess Vulnerability Scanner:** [github.com/s4e-io/openness](https://github.com/s4e-io/openness)  
 **This repo:** [github.com/s4e-io/openness-collector](https://github.com/s4e-io/openness-collector)
 
 Version: **0.8.0**  
