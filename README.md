@@ -1,10 +1,11 @@
-# openness-collector
+# OpenNess Vulnerability Scanner: Collector
 
-Local endpoint evidence collector. It reads the machine it runs on and writes one JSON
-evidence file (`.openness`) with the operating system, packages, applications, updates,
-services, processes, listening ports, users, security settings and the links between them.
+`openness-collector` is the local endpoint evidence collector of OpenNess Vulnerability
+Scanner. It reads the machine it runs on and writes one JSON evidence file (`.openness`)
+with the operating system, packages, applications, updates, services, processes, listening
+ports, users, security settings and the links between them.
 
-**Openness project:** [github.com/s4e-io/openness](https://github.com/s4e-io/openness)  
+**OpenNess Vulnerability Scanner:** [github.com/s4e-io/openness](https://github.com/s4e-io/openness)  
 **This repo:** [github.com/s4e-io/openness-collector](https://github.com/s4e-io/openness-collector)
 
 Version: **0.8.0**  
@@ -33,7 +34,7 @@ use AI at runtime. Project purpose and technical context for contributors:
 - [Upload (optional)](#upload-optional)
 - [Supported platforms](#supported-platforms)
 - [More documentation](#more-documentation)
-- [Openness in S4E](#openness-in-s4e)
+- [OpenNess in S4E](#openness-in-s4e)
 - [License](#license)
 
 ---
@@ -493,7 +494,7 @@ repository.
 
 ---
 
-## Openness in S4E
+## OpenNess in S4E
 
 Openness is free to run on your own machines. The same collector and resolver power the
 Inside depth of [S4E](https://s4e.io), which adds scheduling, history, multi-host views and
