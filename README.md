@@ -34,7 +34,7 @@ use AI at runtime. Project purpose and technical context for contributors:
 - [Upload (optional)](#upload-optional)
 - [Supported platforms](#supported-platforms)
 - [More documentation](#more-documentation)
-- [Openness in S4E](#openness-in-s4e)
+- [OpenNess in S4E](#openness-in-s4e)
 - [License](#license)
 
 ---
@@ -494,7 +494,7 @@ repository.
 
 ---
 
-## Openness in S4E
+## OpenNess in S4E
 
 Openness is free to run on your own machines. The same collector and resolver power the
 Inside depth of [S4E](https://s4e.io), which adds scheduling, history, multi-host views and
