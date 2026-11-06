@@ -59,6 +59,19 @@ jobs:
           ./dist/openness-collector_${VERSION}_linux_amd64 version | tee dist/version.txt
           grep -F "openness-collector ${VERSION}" dist/version.txt
 
+      # The same binaries without the version in the name, so
+      # https://github.com/s4e-io/openness-collector/releases/latest/download/openness-collector_<os>_<arch>
+      # always serves the newest release. They are listed in SHA256SUMS too.
+      - name: Latest names
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          cd dist
+          for f in openness-collector_"${VERSION}"_*; do
+            cp -p "$f" "openness-collector_${f#openness-collector_${VERSION}_}"
+          done
+          ls -l
+
       - name: Checksums
         run: |
           set -euo pipefail
@@ -80,6 +93,10 @@ jobs:
           cosign sign-blob --yes \
             --output-signature dist/SHA256SUMS.sig \
             --output-certificate dist/SHA256SUMS.pem \
+            dist/openness-collector_linux_amd64
+            dist/openness-collector_linux_arm64
+            dist/openness-collector_windows_amd64.exe
+            dist/openness-collector_darwin_arm64
             dist/SHA256SUMS
           # Fail the release if the just-produced signature does not verify.
           cosign verify-blob \

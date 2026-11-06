@@ -107,6 +107,15 @@ cosign verify-blob --certificate SHA256SUMS.pem --signature SHA256SUMS.sig \
 install -m 0755 openness-collector_*_linux_amd64 /usr/local/bin/openness-collector
 ```
 
+Every release also carries the same binaries without the version in the name, so a script
+can always fetch the newest one (the `SHA256SUMS` of the release lists both names):
+
+```bash
+curl -fLO https://github.com/s4e-io/openness-collector/releases/latest/download/openness-collector_linux_amd64
+curl -fLO https://github.com/s4e-io/openness-collector/releases/latest/download/SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
 On Windows (PowerShell), compare the hash by hand:
 
 ```powershell

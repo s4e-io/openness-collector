@@ -7,6 +7,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Release files without the version in the name (`openness-collector_<os>_<arch>`), so `releases/latest/download/` links always serve the newest release. `SHA256SUMS` lists them too.
+
 ### Changed
 
 - Vulnerability reports go to support@s4e.io. CODEOWNERS is removed, so a pull request does not ask for a second approver.
