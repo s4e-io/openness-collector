@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/s4e-io/openness-collector/internal/modules/common"
+	"github.com/s4e-io/openness-collector/internal/procutil"
 	"github.com/s4e-io/openness-collector/internal/schema"
 )
 
@@ -71,7 +72,7 @@ func (m *Services) Run(ctx context.Context) schema.ModuleResult {
 		return res
 	}
 
-	cmd := exec.CommandContext(ctx, "systemctl", "list-units", "--type=service", "--all", "--no-pager", "--no-legend", "--plain")
+	cmd := procutil.Command(ctx, "systemctl", "list-units", "--type=service", "--all", "--no-pager", "--no-legend", "--plain")
 	out, err := cmd.Output()
 	if err != nil {
 		res.Errors = append(res.Errors, common.Err(m.ID(), "collection_error", err.Error()))
@@ -158,7 +159,7 @@ func (m *Services) Run(ctx context.Context) schema.ModuleResult {
 }
 
 func systemctlShow(ctx context.Context, unit string) map[string]string {
-	cmd := exec.CommandContext(ctx, "systemctl", "show", unit,
+	cmd := procutil.Command(ctx, "systemctl", "show", unit,
 		"--property=Description,UnitFileState,FragmentPath,ExecStart,MainPID,User,Id,Type",
 		"--no-pager")
 	out, err := cmd.Output()
@@ -258,7 +259,7 @@ func probeCmd(ctx context.Context, name string, args ...string) probeResult {
 		pr.Message = "not found"
 		return pr
 	}
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procutil.Command(ctx, name, args...)
 	out, err := cmd.CombinedOutput()
 	s := strings.TrimSpace(string(out))
 	if err != nil {
@@ -399,7 +400,7 @@ func readCmd(ctx context.Context, name string, args ...string) string {
 	if _, err := exec.LookPath(name); err != nil {
 		return ""
 	}
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procutil.Command(ctx, name, args...)
 	out, err := cmd.CombinedOutput()
 	s := strings.TrimSpace(string(out))
 	if err != nil && s == "" {

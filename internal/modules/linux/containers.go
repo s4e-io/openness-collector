@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,17 +13,22 @@ import (
 	"time"
 
 	"github.com/s4e-io/openness-collector/internal/modules/common"
+	"github.com/s4e-io/openness-collector/internal/procutil"
 	"github.com/s4e-io/openness-collector/internal/schema"
 )
 
-const maxContainerPackages = 500
+// maxContainerPackages caps package records per container (same cap as a
+// host); maxContainerPackagesTotal caps them across all containers so the
+// evidence file stays under its size limit.
+const maxContainerPackages = maxPackages
+const maxContainerPackagesTotal = 100000
 const maxContainersInspect = 40
 
 // Containers inventories Docker/Podman/containerd without mutating runtime state.
 type Containers struct{}
 
 func (m *Containers) ID() string          { return "containers" }
-func (m *Containers) Version() string     { return "1.0.0" }
+func (m *Containers) Version() string     { return "1.1.0" }
 func (m *Containers) Platforms() []string { return []string{"linux"} }
 
 func (m *Containers) Run(ctx context.Context) schema.ModuleResult {
@@ -41,6 +47,7 @@ func (m *Containers) Run(ctx context.Context) schema.ModuleResult {
 	foundRuntime := false
 	anyPartial := false
 	seenID := map[string]bool{}
+	pkgBudget := maxContainerPackagesTotal
 
 	for _, rt := range runtimes {
 		path, err := exec.LookPath(rt.bin)
@@ -100,27 +107,44 @@ func (m *Containers) Run(ctx context.Context) schema.ModuleResult {
 				}
 			}
 			// Package DB from overlay merged dir when readable (host-side, no exec into container).
+			limit := min(maxContainerPackages, pkgBudget)
 			rootfs := asString(ev["rootfs_path"])
 			var pkgs []map[string]any
+			var truncated bool
 			var perr string
-			if rootfs != "" {
-				pkgs, perr = readContainerPackages(rootfs)
-			}
-			// Fallback: docker/podman cp of package DB files (read-only, works when MergedDir not mounted).
-			if len(pkgs) == 0 {
-				pkgs2, perr2 := readContainerPackagesViaCopy(ctx, path, id)
-				if len(pkgs2) > 0 {
-					pkgs = pkgs2
-					ev["package_source"] = "runtime_cp"
-					perr = ""
-				} else if perr == "" {
-					perr = perr2
-				}
+			if limit == 0 {
+				truncated = true
 			} else {
-				ev["package_source"] = "rootfs"
+				if rootfs != "" {
+					pkgs, truncated, perr = readContainerPackages(ctx, rootfs, limit)
+				}
+				// Fallback: docker/podman cp of package DB files (read-only, works when MergedDir not mounted).
+				if len(pkgs) == 0 {
+					pkgs2, truncated2, perr2 := readContainerPackagesViaCopy(ctx, path, id, limit)
+					if len(pkgs2) > 0 {
+						pkgs, truncated = pkgs2, truncated2
+						ev["package_source"] = "runtime_cp"
+						// The copy succeeded, so a rootfs read error is moot.
+						perr = ""
+					} else if perr == "" {
+						perr = perr2
+					}
+				} else {
+					ev["package_source"] = "rootfs"
+				}
 			}
+			pkgBudget -= len(pkgs)
 			if perr != "" {
 				res.Errors = append(res.Errors, common.Err(m.ID(), "partial", shortID(id)+": "+perr))
+				anyPartial = true
+			}
+			if truncated {
+				// Kept separate from perr so no later step can erase it.
+				res.Errors = append(res.Errors, common.Err(m.ID(), "package_limit_truncated",
+					shortID(id)+": package records capped at "+itoa(limit)))
+				ev["packages_truncated"] = true
+				ev["package_limit"] = limit
+				res.Truncated = true
 				anyPartial = true
 			}
 			if len(pkgs) > 0 {
@@ -170,7 +194,7 @@ func (m *Containers) Run(ctx context.Context) schema.ModuleResult {
 
 func listContainersCLI(ctx context.Context, bin string) ([]map[string]any, string, string) {
 	// Include stopped; never start/stop.
-	cmd := exec.CommandContext(ctx, bin, "ps", "-a", "--format", "{{json .}}")
+	cmd := procutil.Command(ctx, bin, "ps", "-a", "--format", "{{json .}}")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, "error", strings.TrimSpace(string(out)) + " " + err.Error()
@@ -199,7 +223,7 @@ func listContainersCLI(ctx context.Context, bin string) ([]map[string]any, strin
 }
 
 func inspectContainer(ctx context.Context, bin, id string) map[string]any {
-	cmd := exec.CommandContext(ctx, bin, "inspect", id)
+	cmd := procutil.Command(ctx, bin, "inspect", id)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return map[string]any{"inspect_error": strings.TrimSpace(string(out))}
@@ -309,7 +333,7 @@ func resolveImageDigest(ctx context.Context, bin, imageRef, imageID string) stri
 		if strings.TrimSpace(key) == "" {
 			continue
 		}
-		cmd := exec.CommandContext(ctx, bin, "image", "inspect", key, "--format", "{{json .RepoDigests}}")
+		cmd := procutil.Command(ctx, bin, "image", "inspect", key, "--format", "{{json .RepoDigests}}")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			continue
@@ -326,7 +350,7 @@ func resolveImageDigest(ctx context.Context, bin, imageRef, imageID string) stri
 			}
 		}
 		// fallback: Image ID is content-addressable even if not a registry digest
-		cmd2 := exec.CommandContext(ctx, bin, "image", "inspect", key, "--format", "{{.Id}}")
+		cmd2 := procutil.Command(ctx, bin, "image", "inspect", key, "--format", "{{.Id}}")
 		out2, err2 := cmd2.CombinedOutput()
 		if err2 == nil {
 			id := strings.TrimSpace(string(out2))
@@ -339,11 +363,11 @@ func resolveImageDigest(ctx context.Context, bin, imageRef, imageID string) stri
 }
 
 func listContainerd(ctx context.Context, res *schema.ModuleResult) (int, error) {
-	cmd := exec.CommandContext(ctx, "ctr", "-n", "moby", "containers", "ls", "-q")
+	cmd := procutil.Command(ctx, "ctr", "-n", "moby", "containers", "ls", "-q")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		// try default namespace
-		cmd = exec.CommandContext(ctx, "ctr", "containers", "ls", "-q")
+		cmd = procutil.Command(ctx, "ctr", "containers", "ls", "-q")
 		out, err = cmd.CombinedOutput()
 		if err != nil {
 			return 0, err
@@ -371,48 +395,59 @@ func listContainerd(ctx context.Context, res *schema.ModuleResult) (int, error) 
 	return n, nil
 }
 
-func readContainerPackages(rootfs string) ([]map[string]any, string) {
+func readContainerPackages(ctx context.Context, rootfs string, limit int) ([]map[string]any, bool, string) {
 	if rootfs == "" {
-		return nil, ""
+		return nil, false, ""
 	}
 	if st, err := os.Stat(rootfs); err != nil || !st.IsDir() {
-		return nil, "rootfs_unavailable"
+		return nil, false, "rootfs_unavailable"
 	}
 	var out []map[string]any
-	// dpkg
-	status := filepath.Join(rootfs, "var/lib/dpkg/status")
-	if b, err := os.ReadFile(status); err == nil {
-		out = append(out, parseDpkgStatus(string(b))...)
+	truncated := false
+	// dpkg (status file and distroless status.d)
+	if f, err := os.Open(filepath.Join(rootfs, "var/lib/dpkg/status")); err == nil {
+		out, truncated = parseDpkgStatus(f, out, limit)
+		_ = f.Close()
+	}
+	if !truncated {
+		out, truncated = parseDpkgStatusD(filepath.Join(rootfs, "var/lib/dpkg/status.d"), out, limit)
 	}
 	// apk
-	apk := filepath.Join(rootfs, "lib/apk/db/installed")
-	if b, err := os.ReadFile(apk); err == nil {
-		out = append(out, parseAPKInstalled(string(b))...)
+	if !truncated {
+		if f, err := os.Open(filepath.Join(rootfs, "lib/apk/db/installed")); err == nil {
+			out, truncated = parseAPKInstalled(f, out, limit)
+			_ = f.Close()
+		}
 	}
 	// rpm sqlite/bdb is harder; try rpm -qa --root if rpm exists (read-only)
 	if len(out) == 0 {
 		if _, err := exec.LookPath("rpm"); err == nil {
-			cmd := exec.Command("rpm", "--root", rootfs, "-qa", "--qf", `%{NAME}\t%{EPOCH}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\n`)
-			if b, err := cmd.Output(); err == nil {
-				out = append(out, parseRPMRoot(string(b))...)
+			stopped, err := streamCommandLines(ctx, func(line string) bool {
+				if len(out) >= limit {
+					return false
+				}
+				if p := parseRPMRootLine(line); p != nil {
+					out = append(out, p)
+				}
+				return true
+			}, "rpm", "--root", rootfs, "-qa", "--qf", `%{NAME}\t%{EPOCH}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\n`)
+			truncated = stopped
+			if err != nil && len(out) == 0 && ctx.Err() != nil {
+				return nil, false, "rpm_timeout"
 			}
 		}
 	}
 	if len(out) == 0 {
-		return nil, "no_package_database"
+		return nil, false, "no_package_database"
 	}
-	if len(out) >= maxContainerPackages {
-		out = out[:maxContainerPackages]
-		return out, "package_limit_truncated"
-	}
-	return out, ""
+	return out, truncated, ""
 }
 
 // readContainerPackagesViaCopy copies package DB files out via runtime CLI (read-only).
-func readContainerPackagesViaCopy(ctx context.Context, bin, containerID string) ([]map[string]any, string) {
+func readContainerPackagesViaCopy(ctx context.Context, bin, containerID string, limit int) ([]map[string]any, bool, string) {
 	tmp, err := os.MkdirTemp("", "openness-ctr-pkg-*")
 	if err != nil {
-		return nil, "tmpdir_failed"
+		return nil, false, "tmpdir_failed"
 	}
 	defer os.RemoveAll(tmp)
 
@@ -421,79 +456,99 @@ func readContainerPackagesViaCopy(ctx context.Context, bin, containerID string) 
 		kind string
 	}{
 		{"/var/lib/dpkg/status", "dpkg"},
+		{"/var/lib/dpkg/status.d", "dpkg-status.d"},
 		{"/lib/apk/db/installed", "apk"},
 		{"/var/lib/apk/db/installed", "apk"},
 	}
 	var out []map[string]any
+	truncated := false
 	for _, c := range candidates {
 		dst := filepath.Join(tmp, filepath.Base(c.src)+"."+c.kind)
-		cmd := exec.CommandContext(ctx, bin, "cp", containerID+":"+c.src, dst)
+		cmd := procutil.Command(ctx, bin, "cp", containerID+":"+c.src, dst)
 		if err := cmd.Run(); err != nil {
 			continue
 		}
-		b, err := os.ReadFile(dst)
-		if err != nil || len(b) == 0 {
-			continue
-		}
-		switch c.kind {
-		case "dpkg":
-			out = append(out, parseDpkgStatus(string(b))...)
-		case "apk":
-			out = append(out, parseAPKInstalled(string(b))...)
+		if c.kind == "dpkg-status.d" {
+			out, truncated = parseDpkgStatusD(dst, out, limit)
+		} else if f, err := os.Open(dst); err == nil {
+			if c.kind == "dpkg" {
+				out, truncated = parseDpkgStatus(f, out, limit)
+			} else {
+				out, truncated = parseAPKInstalled(f, out, limit)
+			}
+			_ = f.Close()
 		}
 		if len(out) > 0 {
 			break
 		}
 	}
 	if len(out) == 0 {
-		return nil, "no_package_database"
+		return nil, false, "no_package_database"
 	}
-	if len(out) >= maxContainerPackages {
-		out = out[:maxContainerPackages]
-		return out, "package_limit_truncated"
-	}
-	return out, ""
+	return out, truncated, ""
 }
 
-func parseDpkgStatus(s string) []map[string]any {
-	var out []map[string]any
-	blocks := strings.Split(s, "\n\n")
-	for _, block := range blocks {
-		name, ver, arch, status := "", "", "", ""
-		for _, line := range strings.Split(block, "\n") {
-			if strings.HasPrefix(line, "Package: ") {
-				name = strings.TrimSpace(strings.TrimPrefix(line, "Package: "))
-			} else if strings.HasPrefix(line, "Version: ") {
-				ver = strings.TrimSpace(strings.TrimPrefix(line, "Version: "))
-			} else if strings.HasPrefix(line, "Architecture: ") {
-				arch = strings.TrimSpace(strings.TrimPrefix(line, "Architecture: "))
-			} else if strings.HasPrefix(line, "Status: ") {
-				status = strings.TrimSpace(strings.TrimPrefix(line, "Status: "))
-			}
+// parseDpkgStatus appends installed packages from a dpkg status stream to out
+// and stops at limit records; the bool reports that packages were left out.
+func parseDpkgStatus(r io.Reader, out []map[string]any, limit int) ([]map[string]any, bool) {
+	truncated := false
+	_ = scanDpkgStanzas(r, func(fields map[string]string) bool {
+		if !dpkgStanzaInstalled(fields, false) {
+			return true
 		}
-		if name == "" || !strings.Contains(status, "installed") {
-			continue
+		if len(out) >= limit {
+			truncated = true
+			return false
 		}
-		out = append(out, map[string]any{
-			"entity_type":        "package",
-			"entity_id":          "pkg:container:dpkg:" + name + ":" + arch + ":" + ver,
-			"name":               name,
-			"raw_version_string": ver,
-			"architecture":       arch,
-			"package_manager":    "dpkg",
-			"packages_scope":     "container",
-			"package_status":     status,
-		})
-		if len(out) >= maxContainerPackages {
-			break
-		}
-	}
-	return out
+		out = append(out, containerDpkgRecord(fields))
+		return true
+	})
+	return out, truncated
 }
 
-func parseAPKInstalled(s string) []map[string]any {
-	pkgs, _ := parseAPKDB(strings.NewReader(s), maxContainerPackages)
-	out := make([]map[string]any, 0, len(pkgs))
+// parseDpkgStatusD is parseDpkgStatus for a distroless status.d directory.
+func parseDpkgStatusD(dir string, out []map[string]any, limit int) ([]map[string]any, bool) {
+	truncated := false
+	_ = scanDpkgStatusD(dir, func(fields map[string]string) bool {
+		if len(out) >= limit {
+			truncated = true
+			return false
+		}
+		out = append(out, containerDpkgRecord(fields))
+		return true
+	})
+	return out, truncated
+}
+
+func containerDpkgRecord(fields map[string]string) map[string]any {
+	name, ver, arch := fields["Package"], fields["Version"], fields["Architecture"]
+	status := fields["Status"]
+	if status == "" {
+		status = "install ok installed"
+	}
+	return map[string]any{
+		"entity_type":        "package",
+		"entity_id":          "pkg:container:dpkg:" + name + ":" + arch + ":" + ver,
+		"name":               name,
+		"raw_version_string": ver,
+		"architecture":       arch,
+		"package_manager":    "dpkg",
+		"packages_scope":     "container",
+		"package_status":     status,
+	}
+}
+
+func parseAPKInstalled(r io.Reader, out []map[string]any, limit int) ([]map[string]any, bool) {
+	room := limit - len(out)
+	if room <= 0 {
+		return out, true
+	}
+	// One past the room so a cut is detectable.
+	pkgs, _ := parseAPKDB(r, room+1)
+	truncated := len(pkgs) > room
+	if truncated {
+		pkgs = pkgs[:room]
+	}
 	for _, p := range pkgs {
 		out = append(out, map[string]any{
 			"entity_type":        "package",
@@ -505,42 +560,34 @@ func parseAPKInstalled(s string) []map[string]any {
 			"packages_scope":     "container",
 		})
 	}
-	return out
+	return out, truncated
 }
 
-func parseRPMRoot(s string) []map[string]any {
-	var out []map[string]any
-	sc := bufio.NewScanner(strings.NewReader(s))
-	for sc.Scan() {
-		parts := strings.Split(sc.Text(), "\t")
-		if len(parts) < 5 {
-			continue
-		}
-		epoch := parts[1]
-		if epoch == "(none)" {
-			epoch = ""
-		}
-		raw := parts[2] + "-" + parts[3]
-		if epoch != "" {
-			raw = epoch + ":" + raw
-		}
-		out = append(out, map[string]any{
-			"entity_type":        "package",
-			"entity_id":          "pkg:container:rpm:" + parts[0] + ":" + parts[4] + ":" + raw,
-			"name":               parts[0],
-			"epoch":              nullIfEmpty(epoch),
-			"version":            parts[2],
-			"release":            parts[3],
-			"architecture":       parts[4],
-			"raw_version_string": raw,
-			"package_manager":    "rpm",
-			"packages_scope":     "container",
-		})
-		if len(out) >= maxContainerPackages {
-			break
-		}
+func parseRPMRootLine(line string) map[string]any {
+	parts := strings.Split(line, "\t")
+	if len(parts) < 5 {
+		return nil
 	}
-	return out
+	epoch := parts[1]
+	if epoch == "(none)" {
+		epoch = ""
+	}
+	raw := parts[2] + "-" + parts[3]
+	if epoch != "" {
+		raw = epoch + ":" + raw
+	}
+	return map[string]any{
+		"entity_type":        "package",
+		"entity_id":          "pkg:container:rpm:" + parts[0] + ":" + parts[4] + ":" + raw,
+		"name":               parts[0],
+		"epoch":              nullIfEmpty(epoch),
+		"version":            parts[2],
+		"release":            parts[3],
+		"architecture":       parts[4],
+		"raw_version_string": raw,
+		"package_manager":    "rpm",
+		"packages_scope":     "container",
+	}
 }
 
 func firstString(m map[string]any, keys ...string) string {

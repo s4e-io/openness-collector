@@ -7,6 +7,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Timeouts are hard. Every external command runs in its own process group bound to the collection deadline and the whole group is killed on cancel, so a hung helper (for example `rpm --root` inside a container rootfs) can no longer keep the collector waiting. `--timeout` is a global deadline: modules that do not return in time are recorded with error code `timeout`, modules not started yet are recorded the same way, and the evidence collected so far is written as `partial`.
+- `packages` reads distroless Debian `/var/lib/dpkg/status.d/*` on the host, and `containers` reads it in container roots and through `docker cp`.
+- Container package lists were capped at 500 and the `docker cp` fallback dropped the truncation record. The cap is now 20000 per container and a cut is always recorded (`package_limit_truncated`, `packages_truncated`, `package_limit`).
+- A very large package database no longer exhausts memory or fails at write time. Package databases are streamed, collection stops at the record cap and is marked partial, and if the evidence file would still exceed its size limit the largest module is cut (`output_size_truncated`) instead of writing nothing.
+- Runtime errors print only the error, not the full usage text. Flag errors still print usage.
+
+### Changed
+
+- `packages` 1.5.0: zero packages is reported as status `unavailable` with error code `no_packages`, also when a package database exists but is empty. Module results can carry `truncated: true`. See `docs/EVIDENCE.md`.
+
 ## [0.8.0] - 2026-11-04
 
 ### Changed

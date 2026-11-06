@@ -12,6 +12,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/s4e-io/openness-collector/internal/procutil"
 )
 
 type Runner struct {
@@ -72,7 +74,7 @@ func osqueryBinaryName() string {
 func versionOf(path string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, path, "--version")
+	cmd := procutil.Command(ctx, path, "--version")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", err
@@ -115,7 +117,7 @@ func (r *Runner) QueryJSON(ctx context.Context, sql string) ([]map[string]string
 	qctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(qctx, r.Path, "--json", sql)
+	cmd := procutil.Command(qctx, r.Path, "--json", sql)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err

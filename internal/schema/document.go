@@ -94,6 +94,9 @@ type ModuleResult struct {
 	Records       int              `json:"records"`
 	Evidence      []EvidenceRecord `json:"evidence"`
 	Errors        []ErrorEntry     `json:"errors"`
+	// Truncated is set when the module stopped collecting at a record or size
+	// limit; the module errors carry the reason (e.g. package_limit_truncated).
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 type ErrorEntry struct {

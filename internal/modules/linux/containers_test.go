@@ -1,6 +1,9 @@
 package linux
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseDpkgStatusContainer(t *testing.T) {
 	in := `Package: libc6
@@ -18,7 +21,7 @@ Status: install ok installed
 Architecture: amd64
 Version: 3.0.2-0ubuntu1
 `
-	pkgs := parseDpkgStatus(in)
+	pkgs, _ := parseDpkgStatus(strings.NewReader(in), nil, maxContainerPackages)
 	if len(pkgs) != 2 {
 		t.Fatalf("want 2 installed, got %d %#v", len(pkgs), pkgs)
 	}
@@ -50,7 +53,7 @@ P:busybox
 V:1.35.0-r29
 A:x86_64
 `
-	pkgs := parseAPKInstalled(in)
+	pkgs, _ := parseAPKInstalled(strings.NewReader(in), nil, maxContainerPackages)
 	if len(pkgs) != 2 {
 		t.Fatalf("got %d", len(pkgs))
 	}
@@ -60,7 +63,7 @@ A:x86_64
 }
 
 func TestParseAPKInstalledSharesHostParser(t *testing.T) {
-	pkgs := parseAPKInstalled(apkFixture)
+	pkgs, _ := parseAPKInstalled(strings.NewReader(apkFixture), nil, maxContainerPackages)
 	if len(pkgs) != 4 {
 		t.Fatalf("got %d", len(pkgs))
 	}

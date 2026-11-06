@@ -78,6 +78,17 @@ Typical record fields:
 - `unavailable`
 - `permission_denied`
 
+### Module limits and truncation
+
+A module result can carry `truncated: true` (omitted when false). It means the module stopped at a record or size limit; the module status is `partial` and its `errors` say why:
+
+| Error code | Module | Meaning |
+|---|---|---|
+| `package_limit_truncated` | `packages`, `containers` | Package records capped (20000 per host or container, 100000 across containers). Container records also get `packages_truncated: true` and `package_limit`. |
+| `output_size_truncated` | any | The evidence file would have exceeded 256 MiB; the module with the most records was cut until it fit. |
+| `timeout` | any | Module timeout or the global `--timeout` was reached. The module status is `error`; the run still writes the evidence collected so far with `collection.status=partial`. |
+| `no_packages` | `packages` | No installed packages were read (status `unavailable`). An empty package list is never reported as `success`. |
+
 ### Relationship confidence labels
 
 When we emit relationships, we label how strong the link is:
