@@ -151,8 +151,12 @@ func CheckToken(ctx context.Context, checkURL, token string) (*CheckResult, erro
 		checkURL = DefaultCheckURL
 	}
 	u, err := url.Parse(checkURL)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
-		return nil, fmt.Errorf("token check URL must be an https URL without credentials")
+	if err != nil {
+		return nil, fmt.Errorf("token check URL must be HTTPS or loopback HTTP without credentials")
+	}
+	loopbackHTTP := u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "::1")
+	if (u.Scheme != "https" && !loopbackHTTP) || u.Host == "" || u.User != nil {
+		return nil, fmt.Errorf("token check URL must be HTTPS or loopback HTTP without credentials")
 	}
 	token = strings.TrimSpace(token)
 	if len(token) < 32 {
