@@ -371,7 +371,7 @@ Still inside `language_deps`.
 
 ## Containers
 
-Module: `containers` `1.1.0`
+Module: `containers` `1.2.0`
 
 ### Steps
 
@@ -383,6 +383,7 @@ Module: `containers` `1.1.0`
 6. Or copy package DB files read-only when needed.
 7. Emit container entity + nested packages. The dpkg `status` file, distroless `status.d/*`, apk `installed` and `rpm --root` are read, at most 20000 package records per container and 100000 across all containers. When the cap cuts a container's list, the container record gets `packages_truncated: true` and `package_limit: <n>`, and the module gets `truncated: true` plus an error with code `package_limit_truncated`, whichever path (`rootfs` or `runtime_cp`) produced the packages.
 8. Emit `container_uses_image` when image identity exists.
+9. Record the image's OS identity in `os_release` from `/etc/os-release`, else `/usr/lib/os-release`, read from the rootfs or copied out with the runtime CLI (see `docs/EVIDENCE.md`). A symlink is followed only inside the rootfs; a copied file is read only when it is a regular file.
 
 ### Never
 

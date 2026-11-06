@@ -15,6 +15,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - A very large package database no longer exhausts memory or fails at write time. Package databases are streamed, collection stops at the record cap and is marked partial, and if the evidence file would still exceed its size limit the largest module is cut (`output_size_truncated`) instead of writing nothing.
 - Runtime errors print only the error, not the full usage text. Flag errors still print usage.
 
+### Added
+
+- `containers` 1.2.0: each container record carries `os_release` (`id`, `id_like`, `name`, `version_id`, `version_codename`, `pretty_name`, `source`, `source_file`) from the image's `/etc/os-release` or `/usr/lib/os-release`, read from the rootfs or through `docker cp` / `podman cp`, so a resolver can select vendor rules for Debian, Ubuntu and RPM-based images. Container dpkg entries also carry `source_package` and `source_version`. Both are additive and optional. See `docs/EVIDENCE.md`.
+
 ### Changed
 
 - `packages` 1.5.0: zero packages is reported as status `unavailable` with error code `no_packages`, also when a package database exists but is empty. Module results can carry `truncated: true`. See `docs/EVIDENCE.md`.

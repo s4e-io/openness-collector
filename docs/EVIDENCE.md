@@ -89,6 +89,24 @@ A module result can carry `truncated: true` (omitted when false). It means the m
 | `timeout` | any | Module timeout or the global `--timeout` was reached. The module status is `error`; the run still writes the evidence collected so far with `collection.status=partial`. |
 | `no_packages` | `packages` | No installed packages were read (status `unavailable`). An empty package list is never reported as `success`. |
 
+### Container records
+
+Each `containers` record describes one container. Fields added in `containers` 1.2.0 are optional; a consumer must accept records without them.
+
+| Field | Meaning |
+|---|---|
+| `os_release` | OS identity of the image, read from `/etc/os-release`, else `/usr/lib/os-release`, in the container rootfs or copied out with `docker cp` / `podman cp`. Absent when neither file exists (scratch images) or could not be read. |
+| `os_release.id` | `ID`, lower case (`debian`, `ubuntu`, `rocky`, `alpine`, ...). |
+| `os_release.id_like` | `ID_LIKE`, lower case, space separated. |
+| `os_release.name` | `NAME`. |
+| `os_release.version_id` | `VERSION_ID` (`11`, `22.04`, `9.3`). |
+| `os_release.version_codename` | `VERSION_CODENAME`, lower case (`bullseye`, `jammy`). |
+| `os_release.pretty_name` | `PRETTY_NAME`. |
+| `os_release.source` | `rootfs` or `runtime_cp`: how the file was read. |
+| `os_release.source_file` | The path inside the container that was read. |
+
+Keys missing from the file are left out. dpkg entries in a container's `packages` also carry `source_package` (the dpkg `Source` name, else the binary name) and `source_version` (the version in `Source: name (version)`, else null), like host packages.
+
 ### Relationship confidence labels
 
 When we emit relationships, we label how strong the link is:

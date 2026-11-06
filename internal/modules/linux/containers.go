@@ -28,7 +28,7 @@ const maxContainersInspect = 40
 type Containers struct{}
 
 func (m *Containers) ID() string          { return "containers" }
-func (m *Containers) Version() string     { return "1.1.0" }
+func (m *Containers) Version() string     { return "1.2.0" }
 func (m *Containers) Platforms() []string { return []string{"linux"} }
 
 func (m *Containers) Run(ctx context.Context) schema.ModuleResult {
@@ -109,6 +109,9 @@ func (m *Containers) Run(ctx context.Context) schema.ModuleResult {
 			// Package DB from overlay merged dir when readable (host-side, no exec into container).
 			limit := min(maxContainerPackages, pkgBudget)
 			rootfs := asString(ev["rootfs_path"])
+			if osr := readContainerOSRelease(ctx, path, id, rootfs); osr != nil {
+				ev["os_release"] = osr
+			}
 			var pkgs []map[string]any
 			var truncated bool
 			var perr string
@@ -526,7 +529,15 @@ func containerDpkgRecord(fields map[string]string) map[string]any {
 	if status == "" {
 		status = "install ok installed"
 	}
+	// Vendor rules are keyed by source package, so the dpkg Source field is
+	// kept as on the host; without it the source is the binary name.
+	srcName, srcVer := ParseDebianSource(fields["Source"])
+	if srcName == "" {
+		srcName = name
+	}
 	return map[string]any{
+		"source_package":     srcName,
+		"source_version":     srcVer,
 		"entity_type":        "package",
 		"entity_id":          "pkg:container:dpkg:" + name + ":" + arch + ":" + ver,
 		"name":               name,
@@ -588,6 +599,101 @@ func parseRPMRootLine(line string) map[string]any {
 		"package_manager":    "rpm",
 		"packages_scope":     "container",
 	}
+}
+
+// osReleaseFiles are the os-release locations, in os-release(5) order.
+var osReleaseFiles = []string{"/etc/os-release", "/usr/lib/os-release"}
+
+// maxOSReleaseBytes bounds an os-release read; real files are a few hundred bytes.
+const maxOSReleaseBytes = 64 << 10
+
+// readContainerOSRelease returns the container's os-release identity, read
+// from the host-visible rootfs or, failing that, copied out with the runtime
+// CLI (read-only). It returns nil when neither path has an os-release file.
+func readContainerOSRelease(ctx context.Context, bin, containerID, rootfs string) map[string]any {
+	if rootfs != "" {
+		for _, f := range osReleaseFiles {
+			if raw := readRootfsOSRelease(rootfs, f); raw != nil {
+				return osReleaseIdentity(raw, "rootfs", f)
+			}
+		}
+	}
+	if bin == "" || containerID == "" {
+		return nil
+	}
+	tmp, err := os.MkdirTemp("", "openness-ctr-osr-*")
+	if err != nil {
+		return nil
+	}
+	defer os.RemoveAll(tmp)
+	for i, f := range osReleaseFiles {
+		dst := filepath.Join(tmp, "os-release."+itoa(i))
+		if err := procutil.Command(ctx, bin, "cp", containerID+":"+f, dst).Run(); err != nil {
+			continue
+		}
+		// docker cp copies a symlink as a link (/etc/os-release usually is
+		// one); only a regular file is read, so a link never leads to a host
+		// file. The next candidate is the link target on most images.
+		if raw := readOSReleaseFile(dst); raw != nil {
+			return osReleaseIdentity(raw, "runtime_cp", f)
+		}
+	}
+	return nil
+}
+
+// readRootfsOSRelease reads rel inside rootfs. A symlink is followed one
+// level and only inside rootfs (absolute targets are re-rooted).
+func readRootfsOSRelease(rootfs, rel string) map[string]string {
+	p := filepath.Join(rootfs, rel)
+	if target, err := os.Readlink(p); err == nil {
+		if filepath.IsAbs(target) {
+			p = filepath.Join(rootfs, target)
+		} else {
+			p = filepath.Join(rootfs, filepath.Dir(rel), target)
+		}
+		if !strings.HasPrefix(p, filepath.Clean(rootfs)+string(filepath.Separator)) {
+			return nil
+		}
+	}
+	return readOSReleaseFile(p)
+}
+
+// readOSReleaseFile parses a regular os-release file; nil when the path is
+// missing, not a regular file, too large or has no identity.
+func readOSReleaseFile(path string) map[string]string {
+	st, err := os.Lstat(path)
+	if err != nil || !st.Mode().IsRegular() || st.Size() > maxOSReleaseBytes {
+		return nil
+	}
+	raw, err := readKeyValueFile(path)
+	if err != nil || (strings.TrimSpace(raw["ID"]) == "" && strings.TrimSpace(raw["NAME"]) == "") {
+		return nil
+	}
+	normalizeOsReleaseKeys(raw)
+	return raw
+}
+
+// osReleaseIdentity maps os-release keys to the container record's
+// os_release object. Absent keys are left out.
+func osReleaseIdentity(raw map[string]string, source, file string) map[string]any {
+	out := map[string]any{"source": source, "source_file": file}
+	for _, k := range []struct{ key, field string }{
+		{"ID", "id"},
+		{"ID_LIKE", "id_like"},
+		{"NAME", "name"},
+		{"VERSION_ID", "version_id"},
+		{"VERSION_CODENAME", "version_codename"},
+		{"PRETTY_NAME", "pretty_name"},
+	} {
+		v := strings.TrimSpace(raw[k.key])
+		if k.key == "ID_LIKE" {
+			v = strings.ToLower(v)
+		}
+		if v != "" {
+			out[k.field] = v
+		}
+	}
+	return out
 }
 
 func firstString(m map[string]any, keys ...string) string {
