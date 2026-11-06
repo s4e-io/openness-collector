@@ -1,11 +1,43 @@
 package auth
 
 import (
+	"context"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
+
+type redirectTransport func(*http.Request) (*http.Response, error)
+
+func (f redirectTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestCheckTokenRejectsInsecureURLAndRedirect(t *testing.T) {
+	if _, err := CheckToken(context.Background(), "http://example.com/check", strings.Repeat("x", 32)); err == nil {
+		t.Fatal("expected http URL to be rejected")
+	}
+	var leaked bool
+	old := http.DefaultTransport
+	http.DefaultTransport = redirectTransport(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "target.example" {
+			leaked = r.ContentLength > 0
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+		}
+		return &http.Response{StatusCode: http.StatusTemporaryRedirect, Body: io.NopCloser(strings.NewReader(`{"code":200}`)),
+			Header: http.Header{"Location": {"http://target.example/check"}}}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = old })
+	res, err := CheckToken(context.Background(), "https://source.example/check", strings.Repeat("x", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OK || leaked {
+		t.Fatalf("redirect followed or accepted: ok=%v leaked=%v", res.OK, leaked)
+	}
+}
 
 func TestCredentialsRoundTrip(t *testing.T) {
 	dir := t.TempDir()
