@@ -7,6 +7,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Vulnerability reports go to support@s4e.io. CODEOWNERS is removed, so a pull request does not ask for a second approver.
+
 ## [0.8.0] - 2026-11-04
 
 ### Changed
