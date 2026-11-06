@@ -3,6 +3,7 @@ package linux
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -52,6 +53,9 @@ func TestReadContainerOSReleaseRootfs(t *testing.T) {
 		{
 			name: "absolute symlink is re-rooted",
 			setup: func(t *testing.T, root string) {
+				if runtime.GOOS == "windows" {
+					t.Skip("absolute symlinks inside a rootfs are a Unix layout")
+				}
 				writeFile(t, filepath.Join(root, "usr/lib/os-release"), debian11OSRelease, 0o644)
 				if err := os.Symlink("/usr/lib/os-release", filepath.Join(root, "etc/os-release")); err != nil {
 					t.Fatal(err)
@@ -112,6 +116,7 @@ func TestReadContainerOSReleaseRootfsSymlinkEscape(t *testing.T) {
 // does not follow it), so the collector must skip it and read
 // /usr/lib/os-release; the record also carries the dpkg source package.
 func TestContainersRuntimeCopyOSRelease(t *testing.T) {
+	skipWithoutShellFakes(t)
 	dir := t.TempDir()
 	osr := filepath.Join(dir, "osr")
 	writeFile(t, osr, debian11OSRelease, 0o644)

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,15 @@ func isolatePackageDBs(t *testing.T, dir string) {
 	t.Cleanup(func() {
 		dpkgStatusPath, dpkgStatusDDir, apkInstalledPath, rpmDBPaths, hostPackageLimit = oldStatus, oldStatusD, oldAPK, oldRPM, oldLimit
 	})
+}
+
+// skipWithoutShellFakes skips tests whose fake dpkg-query, rpm or docker are
+// shell scripts; Windows cannot run them.
+func skipWithoutShellFakes(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake package tools are shell scripts; not runnable on Windows")
+	}
 }
 
 func writeFile(t *testing.T, path, body string, mode os.FileMode) {
@@ -154,6 +164,7 @@ func TestHostPackageLimitExactIsNotTruncated(t *testing.T) {
 // A dpkg-query that prints forever: streaming stops at the limit and the
 // process is killed instead of being read to the end.
 func TestCollectDPKGStopsEndlessOutput(t *testing.T) {
+	skipWithoutShellFakes(t)
 	dir := t.TempDir()
 	isolatePackageDBs(t, dir)
 	hostPackageLimit = 100
@@ -193,6 +204,7 @@ func TestContainerPackagesStatusDAndLimit(t *testing.T) {
 
 // A hanging rpm inside a container rootfs scan must not outlive the context.
 func TestContainerRPMHangHonoursContext(t *testing.T) {
+	skipWithoutShellFakes(t)
 	dir := t.TempDir()
 	root := t.TempDir()
 	writeFile(t, filepath.Join(dir, "rpm"), "#!/bin/sh\nsleep 300 &\nwait\n", 0o755)
@@ -212,6 +224,7 @@ func TestContainerRPMHangHonoursContext(t *testing.T) {
 // Fake runtime whose cp hands back a large dpkg status: truncation must
 // survive the runtime_cp fallback and be visible on the record.
 func TestContainersRuntimeCopyKeepsTruncation(t *testing.T) {
+	skipWithoutShellFakes(t)
 	dir := t.TempDir()
 	statusFile := filepath.Join(dir, "status-big")
 	writeFile(t, statusFile, bigStatus(maxContainerPackages+10), 0o644)
@@ -295,6 +308,7 @@ func TestContainerRPMReadErrors(t *testing.T) {
 // A container whose rpm read times out carries packages_error and the module
 // error uses container_packages_unread, not the generic partial code.
 func TestContainersRPMTimeoutRecorded(t *testing.T) {
+	skipWithoutShellFakes(t)
 	dir := t.TempDir()
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "var/lib/rpm/rpmdb.sqlite"), "x", 0o644)
