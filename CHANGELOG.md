@@ -24,6 +24,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - `packages` 1.5.0: zero packages is reported as status `unavailable` with error code `no_packages`, also when a package database exists but is empty. Module results can carry `truncated: true`. See `docs/EVIDENCE.md`.
+- Vulnerability reports go to support@s4e.io. CODEOWNERS is removed, so a pull request does not ask for a second approver.
 
 ## [0.8.0] - 2026-11-04
 

@@ -7,7 +7,7 @@ Please **do not** open a public GitHub issue for security vulnerabilities.
 Report them through one of:
 
 - [GitHub Security Advisories](https://github.com/s4e-io/openness-collector/security/advisories/new) (preferred)
-- Email: **security@s4e.io**
+- Email: **support@s4e.io**
 
 We aim to acknowledge reports within **72 hours** and provide a remediation timeline when possible.
 
