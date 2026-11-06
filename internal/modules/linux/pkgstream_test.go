@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -242,5 +243,94 @@ esac
 	}
 	if !found || res.Status != "partial" || !res.Truncated {
 		t.Fatalf("status=%s truncated=%v errors=%v", res.Status, res.Truncated, res.Errors)
+	}
+}
+
+// An rpm database that cannot be read is reported with a specific code;
+// a rootfs without any package database stays no_package_database.
+func TestContainerRPMReadErrors(t *testing.T) {
+	withDB := func(t *testing.T) string {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, "var/lib/rpm/rpmdb.sqlite"), "x", 0o644)
+		return root
+	}
+	cases := []struct {
+		name     string
+		rpm      string // fake rpm script; empty means no rpm on PATH
+		db       bool
+		wantCode string
+	}{
+		{"exit non-zero with database", "#!/bin/sh\necho broken >&2\nexit 1\n", true, pkgErrReadFailed},
+		{"exit non-zero without database", "#!/bin/sh\nexit 1\n", false, "no_package_database"},
+		{"rpm missing with database", "", true, pkgErrRPMUnavailable},
+		{"rpm missing without database", "", false, "no_package_database"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.rpm != "" {
+				writeFile(t, filepath.Join(dir, "rpm"), tc.rpm, 0o755)
+			}
+			t.Setenv("PATH", dir+":/bin:/usr/bin")
+			if _, err := exec.LookPath("rpm"); (err == nil) != (tc.rpm != "") {
+				t.Skip("host rpm on /bin or /usr/bin")
+			}
+			root := t.TempDir()
+			if tc.db {
+				root = withDB(t)
+			}
+			pkgs, _, perr := readContainerPackages(t.Context(), root, 100)
+			code, _, _ := strings.Cut(perr, ": ")
+			if len(pkgs) != 0 || code != tc.wantCode {
+				t.Fatalf("pkgs=%d perr=%q", len(pkgs), perr)
+			}
+			pe := containerPackagesError(perr)
+			if (pe != nil) != tc.db || (pe != nil && pe["code"] != tc.wantCode) {
+				t.Fatalf("packages_error=%v", pe)
+			}
+		})
+	}
+}
+
+// A container whose rpm read times out carries packages_error and the module
+// error uses container_packages_unread, not the generic partial code.
+func TestContainersRPMTimeoutRecorded(t *testing.T) {
+	dir := t.TempDir()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "var/lib/rpm/rpmdb.sqlite"), "x", 0o644)
+	writeFile(t, filepath.Join(root, "etc/os-release"), rocky9OSRelease, 0o644)
+	writeFile(t, filepath.Join(dir, "rpm"), "#!/bin/sh\nsleep 300 &\nwait\n", 0o755)
+	shim := `#!/bin/sh
+case "$1" in
+ps) echo '{"ID":"c0000000000001","Names":"rocky","Image":"rockylinux:9","State":"running"}';;
+inspect) echo '[{"Id":"c0000000000001","Name":"/rocky","Config":{"Image":"rockylinux:9"},"Image":"sha256:aa","GraphDriver":{"Data":{"MergedDir":"` + root + `"}}}]';;
+image) echo '[]';;
+*) exit 1;;
+esac
+`
+	writeFile(t, filepath.Join(dir, "docker"), shim, 0o755)
+	t.Setenv("PATH", dir+":/bin:/usr/bin")
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	res := (&Containers{}).Run(ctx)
+	if len(res.Evidence) != 1 {
+		t.Fatalf("evidence=%d errors=%v", len(res.Evidence), res.Errors)
+	}
+	v := res.Evidence[0].Value.(map[string]any)
+	pe, _ := v["packages_error"].(map[string]any)
+	if pe == nil || pe["code"] != pkgErrRPMTimeout || pe["message"] == "" || v["package_count"] != 0 {
+		t.Fatalf("record: packages_error=%v package_count=%v", v["packages_error"], v["package_count"])
+	}
+	found := false
+	for _, e := range res.Errors {
+		if e.Code == "container_packages_unread" && e.Message == "c00000000000: rpm_timeout" {
+			found = true
+		}
+		if e.Code == "partial" {
+			t.Fatalf("generic partial error: %v", e)
+		}
+	}
+	if !found || res.Status != "partial" {
+		t.Fatalf("status=%s errors=%v", res.Status, res.Errors)
 	}
 }

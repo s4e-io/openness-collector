@@ -21,7 +21,7 @@ Status: install ok installed
 Architecture: amd64
 Version: 3.0.2-0ubuntu1
 `
-	pkgs, _ := parseDpkgStatus(strings.NewReader(in), nil, maxContainerPackages)
+	pkgs, _, _ := parseDpkgStatus(strings.NewReader(in), nil, maxContainerPackages)
 	if len(pkgs) != 2 {
 		t.Fatalf("want 2 installed, got %d %#v", len(pkgs), pkgs)
 	}
@@ -53,7 +53,7 @@ P:busybox
 V:1.35.0-r29
 A:x86_64
 `
-	pkgs, _ := parseAPKInstalled(strings.NewReader(in), nil, maxContainerPackages)
+	pkgs, _, _ := parseAPKInstalled(strings.NewReader(in), nil, maxContainerPackages)
 	if len(pkgs) != 2 {
 		t.Fatalf("got %d", len(pkgs))
 	}
@@ -63,7 +63,7 @@ A:x86_64
 }
 
 func TestParseAPKInstalledSharesHostParser(t *testing.T) {
-	pkgs, _ := parseAPKInstalled(strings.NewReader(apkFixture), nil, maxContainerPackages)
+	pkgs, _, _ := parseAPKInstalled(strings.NewReader(apkFixture), nil, maxContainerPackages)
 	if len(pkgs) != 4 {
 		t.Fatalf("got %d", len(pkgs))
 	}

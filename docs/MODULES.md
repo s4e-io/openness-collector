@@ -109,7 +109,7 @@ See [section 12](#12-linux-evidence-chain-listen--package--repo).
 
 See [section 17](#17-loaded-libraries).
 
-### `containers` (1.2.0)
+### `containers` (1.3.0)
 
 See [section 16](#16-containers).
 

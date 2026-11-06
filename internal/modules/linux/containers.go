@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,7 +30,7 @@ const maxContainersInspect = 40
 type Containers struct{}
 
 func (m *Containers) ID() string          { return "containers" }
-func (m *Containers) Version() string     { return "1.2.0" }
+func (m *Containers) Version() string     { return "1.3.0" }
 func (m *Containers) Platforms() []string { return []string{"linux"} }
 
 func (m *Containers) Run(ctx context.Context) schema.ModuleResult {
@@ -138,7 +140,14 @@ func (m *Containers) Run(ctx context.Context) schema.ModuleResult {
 			}
 			pkgBudget -= len(pkgs)
 			if perr != "" {
-				res.Errors = append(res.Errors, common.Err(m.ID(), "partial", shortID(id)+": "+perr))
+				code := "partial"
+				if pe := containerPackagesError(perr); pe != nil {
+					// A package database is there but was not read: the
+					// container's packages are unknown, not empty.
+					ev["packages_error"] = pe
+					code = "container_packages_unread"
+				}
+				res.Errors = append(res.Errors, common.Err(m.ID(), code, shortID(id)+": "+perr))
 				anyPartial = true
 			}
 			if truncated {
@@ -398,6 +407,11 @@ func listContainerd(ctx context.Context, res *schema.ModuleResult) (int, error) 
 	return n, nil
 }
 
+// readContainerPackages reads the package database in a host-visible
+// container rootfs. The error string is a code, optionally followed by ": "
+// and a detail.
+// rpm_timeout, rpm_unavailable and package_read_failed mean a package
+// database is present but was not read (see containerPackagesError).
 func readContainerPackages(ctx context.Context, rootfs string, limit int) ([]map[string]any, bool, string) {
 	if rootfs == "" {
 		return nil, false, ""
@@ -407,23 +421,38 @@ func readContainerPackages(ctx context.Context, rootfs string, limit int) ([]map
 	}
 	var out []map[string]any
 	truncated := false
+	readErr := ""
+	noteErr := func(what string, err error) {
+		if err != nil && readErr == "" {
+			readErr = pkgErrReadFailed + ": " + what + ": " + err.Error()
+		}
+	}
 	// dpkg (status file and distroless status.d)
 	if f, err := os.Open(filepath.Join(rootfs, "var/lib/dpkg/status")); err == nil {
-		out, truncated = parseDpkgStatus(f, out, limit)
+		out, truncated, err = parseDpkgStatus(f, out, limit)
 		_ = f.Close()
+		noteErr("dpkg status", err)
+	} else if !os.IsNotExist(err) {
+		noteErr("dpkg status", err)
 	}
 	if !truncated {
-		out, truncated = parseDpkgStatusD(filepath.Join(rootfs, "var/lib/dpkg/status.d"), out, limit)
+		var err error
+		out, truncated, err = parseDpkgStatusD(filepath.Join(rootfs, "var/lib/dpkg/status.d"), out, limit)
+		noteErr("dpkg status.d", err)
 	}
 	// apk
 	if !truncated {
 		if f, err := os.Open(filepath.Join(rootfs, "lib/apk/db/installed")); err == nil {
-			out, truncated = parseAPKInstalled(f, out, limit)
+			out, truncated, err = parseAPKInstalled(f, out, limit)
 			_ = f.Close()
+			noteErr("apk installed db", err)
+		} else if !os.IsNotExist(err) {
+			noteErr("apk installed db", err)
 		}
 	}
 	// rpm sqlite/bdb is harder; try rpm -qa --root if rpm exists (read-only)
 	if len(out) == 0 {
+		hasDB := hasRPMDatabase(rootfs)
 		if _, err := exec.LookPath("rpm"); err == nil {
 			stopped, err := streamCommandLines(ctx, func(line string) bool {
 				if len(out) >= limit {
@@ -435,15 +464,72 @@ func readContainerPackages(ctx context.Context, rootfs string, limit int) ([]map
 				return true
 			}, "rpm", "--root", rootfs, "-qa", "--qf", `%{NAME}\t%{EPOCH}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\n`)
 			truncated = stopped
-			if err != nil && len(out) == 0 && ctx.Err() != nil {
-				return nil, false, "rpm_timeout"
+			if err != nil && len(out) == 0 {
+				if ctx.Err() != nil {
+					return nil, false, pkgErrRPMTimeout
+				}
+				if hasDB {
+					return nil, false, pkgErrReadFailed + ": rpm --root: " + truncateStr(err.Error(), 200)
+				}
 			}
+		} else if hasDB {
+			return nil, false, pkgErrRPMUnavailable + ": rpm database present but rpm is not installed on the host"
 		}
 	}
 	if len(out) == 0 {
+		if readErr != "" {
+			return nil, false, readErr
+		}
 		return nil, false, "no_package_database"
 	}
-	return out, truncated, ""
+	return out, truncated, readErr
+}
+
+// Package read error codes for a container whose package database is present
+// but could not be read.
+const (
+	pkgErrRPMTimeout     = "rpm_timeout"
+	pkgErrRPMUnavailable = "rpm_unavailable"
+	pkgErrReadFailed     = "package_read_failed"
+)
+
+// pkgErrMessages are the default messages when an error carries no detail.
+var pkgErrMessages = map[string]string{
+	pkgErrRPMTimeout:     "rpm --root did not finish before the module deadline",
+	pkgErrRPMUnavailable: "rpm database present but rpm is not installed on the host",
+	pkgErrReadFailed:     "package database could not be read",
+}
+
+// containerPackagesError maps a package read error to the container record's
+// packages_error object, or nil when the error does not mean an unread
+// package database (no_package_database, rootfs_unavailable, ...).
+func containerPackagesError(perr string) map[string]any {
+	code, detail, _ := strings.Cut(perr, ": ")
+	msg, ok := pkgErrMessages[code]
+	if !ok {
+		return nil
+	}
+	if detail != "" {
+		msg = detail
+	}
+	return map[string]any{"code": code, "message": msg}
+}
+
+// rpmDatabasePaths are rpmdb files relative to a root: the classic location
+// and the /usr/lib/sysimage one used by newer RPM distributions.
+var rpmDatabasePaths = []string{
+	"var/lib/rpm/rpmdb.sqlite", "var/lib/rpm/Packages", "var/lib/rpm/Packages.db",
+	"usr/lib/sysimage/rpm/rpmdb.sqlite", "usr/lib/sysimage/rpm/Packages", "usr/lib/sysimage/rpm/Packages.db",
+}
+
+// hasRPMDatabase reports whether rootfs holds an rpm database file.
+func hasRPMDatabase(rootfs string) bool {
+	for _, p := range rpmDatabasePaths {
+		if _, err := os.Lstat(filepath.Join(rootfs, p)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // readContainerPackagesViaCopy copies package DB files out via runtime CLI (read-only).
@@ -465,37 +551,47 @@ func readContainerPackagesViaCopy(ctx context.Context, bin, containerID string, 
 	}
 	var out []map[string]any
 	truncated := false
+	readErr := ""
 	for _, c := range candidates {
 		dst := filepath.Join(tmp, filepath.Base(c.src)+"."+c.kind)
 		cmd := procutil.Command(ctx, bin, "cp", containerID+":"+c.src, dst)
 		if err := cmd.Run(); err != nil {
 			continue
 		}
+		var perr error
 		if c.kind == "dpkg-status.d" {
-			out, truncated = parseDpkgStatusD(dst, out, limit)
+			out, truncated, perr = parseDpkgStatusD(dst, out, limit)
 		} else if f, err := os.Open(dst); err == nil {
 			if c.kind == "dpkg" {
-				out, truncated = parseDpkgStatus(f, out, limit)
+				out, truncated, perr = parseDpkgStatus(f, out, limit)
 			} else {
-				out, truncated = parseAPKInstalled(f, out, limit)
+				out, truncated, perr = parseAPKInstalled(f, out, limit)
 			}
 			_ = f.Close()
+		} else {
+			perr = err
+		}
+		if perr != nil && readErr == "" {
+			readErr = pkgErrReadFailed + ": " + c.src + ": " + perr.Error()
 		}
 		if len(out) > 0 {
 			break
 		}
 	}
 	if len(out) == 0 {
+		if readErr != "" {
+			return nil, false, readErr
+		}
 		return nil, false, "no_package_database"
 	}
-	return out, truncated, ""
+	return out, truncated, readErr
 }
 
 // parseDpkgStatus appends installed packages from a dpkg status stream to out
 // and stops at limit records; the bool reports that packages were left out.
-func parseDpkgStatus(r io.Reader, out []map[string]any, limit int) ([]map[string]any, bool) {
+func parseDpkgStatus(r io.Reader, out []map[string]any, limit int) ([]map[string]any, bool, error) {
 	truncated := false
-	_ = scanDpkgStanzas(r, func(fields map[string]string) bool {
+	err := scanDpkgStanzas(r, func(fields map[string]string) bool {
 		if !dpkgStanzaInstalled(fields, false) {
 			return true
 		}
@@ -506,13 +602,14 @@ func parseDpkgStatus(r io.Reader, out []map[string]any, limit int) ([]map[string
 		out = append(out, containerDpkgRecord(fields))
 		return true
 	})
-	return out, truncated
+	return out, truncated, err
 }
 
 // parseDpkgStatusD is parseDpkgStatus for a distroless status.d directory.
-func parseDpkgStatusD(dir string, out []map[string]any, limit int) ([]map[string]any, bool) {
+// A missing directory is not an error.
+func parseDpkgStatusD(dir string, out []map[string]any, limit int) ([]map[string]any, bool, error) {
 	truncated := false
-	_ = scanDpkgStatusD(dir, func(fields map[string]string) bool {
+	err := scanDpkgStatusD(dir, func(fields map[string]string) bool {
 		if len(out) >= limit {
 			truncated = true
 			return false
@@ -520,7 +617,10 @@ func parseDpkgStatusD(dir string, out []map[string]any, limit int) ([]map[string
 		out = append(out, containerDpkgRecord(fields))
 		return true
 	})
-	return out, truncated
+	if errors.Is(err, fs.ErrNotExist) {
+		err = nil
+	}
+	return out, truncated, err
 }
 
 func containerDpkgRecord(fields map[string]string) map[string]any {
@@ -549,13 +649,13 @@ func containerDpkgRecord(fields map[string]string) map[string]any {
 	}
 }
 
-func parseAPKInstalled(r io.Reader, out []map[string]any, limit int) ([]map[string]any, bool) {
+func parseAPKInstalled(r io.Reader, out []map[string]any, limit int) ([]map[string]any, bool, error) {
 	room := limit - len(out)
 	if room <= 0 {
-		return out, true
+		return out, true, nil
 	}
 	// One past the room so a cut is detectable.
-	pkgs, _ := parseAPKDB(r, room+1)
+	pkgs, err := parseAPKDB(r, room+1)
 	truncated := len(pkgs) > room
 	if truncated {
 		pkgs = pkgs[:room]
@@ -571,7 +671,7 @@ func parseAPKInstalled(r io.Reader, out []map[string]any, limit int) ([]map[stri
 			"packages_scope":     "container",
 		})
 	}
-	return out, truncated
+	return out, truncated, err
 }
 
 func parseRPMRootLine(line string) map[string]any {

@@ -19,6 +19,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 - `containers` 1.2.0: each container record carries `os_release` (`id`, `id_like`, `name`, `version_id`, `version_codename`, `pretty_name`, `source`, `source_file`) from the image's `/etc/os-release` or `/usr/lib/os-release`, read from the rootfs or through `docker cp` / `podman cp`, so a resolver can select vendor rules for Debian, Ubuntu and RPM-based images. Container dpkg entries also carry `source_package` and `source_version`. Both are additive and optional. See `docs/EVIDENCE.md`.
 
+- `containers` 1.3.0: a container whose package database is present but could not be read (rpm timeout or error, no `rpm` on the host, unreadable dpkg or apk data) carries `packages_error` (`code`, `message`), and the module error uses code `container_packages_unread` instead of `partial`, so a consumer can tell unread packages from an image without a package database. Additive and optional. See `docs/EVIDENCE.md`.
+
 ### Changed
 
 - `packages` 1.5.0: zero packages is reported as status `unavailable` with error code `no_packages`, also when a package database exists but is empty. Module results can carry `truncated: true`. See `docs/EVIDENCE.md`.
