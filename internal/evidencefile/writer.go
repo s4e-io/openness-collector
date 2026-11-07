@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,13 @@ import (
 )
 
 const MaxOutputBytes = 256 * 1024 * 1024
+
+// maxOutputBytes is MaxOutputBytes; a variable so tests can lower it.
+var maxOutputBytes int64 = MaxOutputBytes
+
+// ErrTooLarge is returned by Write when the encoded document is over the
+// size limit; nothing is written.
+var ErrTooLarge = errors.New("output exceeds max size")
 
 var (
 	allowedCollectionStatus = map[string]bool{
@@ -80,8 +88,8 @@ func Write(path string, doc *schema.Document, compress bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if int64(len(payload)) > MaxOutputBytes {
-		return "", fmt.Errorf("output exceeds max size: %d", len(payload))
+	if int64(len(payload)) > maxOutputBytes {
+		return "", fmt.Errorf("%w: %d", ErrTooLarge, len(payload))
 	}
 
 	data := payload

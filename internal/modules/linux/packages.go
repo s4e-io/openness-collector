@@ -1,7 +1,6 @@
 package linux
 
 import (
-	"bufio"
 	"context"
 	"io"
 	"os"
@@ -16,25 +15,45 @@ import (
 type Packages struct{}
 
 func (m *Packages) ID() string          { return "packages" }
-func (m *Packages) Version() string     { return "1.4.0" }
+func (m *Packages) Version() string     { return "1.5.0" }
 func (m *Packages) Platforms() []string { return []string{"linux"} }
 
 func (m *Packages) Run(ctx context.Context) schema.ModuleResult {
 	started := time.Now()
 	res := common.NewResult(m.ID(), m.Version())
 
+	dbFound := false
 	if _, err := exec.LookPath("dpkg-query"); err == nil {
+		dbFound = true
 		collectDPKG(ctx, &res, m.ID())
 		enrichPackagesWithAptLists(&res)
+	} else if st, err := os.Stat(dpkgStatusPath); err == nil && st.Mode().IsRegular() {
+		// dpkg database without the dpkg tools (minimal images).
+		dbFound = true
+		if _, err := appendDPKGStatusFile(&res, m.ID(), dpkgStatusPath); err != nil {
+			res.Errors = append(res.Errors, common.Err(m.ID(), "partial", "dpkg status: "+err.Error()))
+		}
+	}
+	if st, err := os.Stat(dpkgStatusDDir); err == nil && st.IsDir() {
+		dbFound = true
+		collectDPKGStatusD(&res, m.ID(), dpkgStatusDDir)
 	}
 	if _, err := exec.LookPath("rpm"); err == nil && rpmDatabasePresent(rpmDBPaths) {
+		dbFound = true
 		collectRPM(ctx, &res, m.ID())
 	}
 	if _, err := os.Stat(apkInstalledPath); err == nil {
+		dbFound = true
 		collectAPK(&res, m.ID(), apkInstalledPath)
 	}
 	if len(res.Evidence) == 0 {
-		res.Errors = append(res.Errors, common.Err(m.ID(), "unavailable", "no supported package manager found"))
+		// Zero packages is never a clean result: downstream must not read an
+		// empty inventory as a host without vulnerable packages.
+		msg := "no supported package manager found"
+		if dbFound {
+			msg = "package database found but no installed packages were read"
+		}
+		res.Errors = append(res.Errors, common.Err(m.ID(), "no_packages", msg))
 		common.Finish(&res, started, "unavailable")
 		return res
 	}
@@ -50,12 +69,21 @@ func (m *Packages) Run(ctx context.Context) schema.ModuleResult {
 var dpkgStatusPath = "/var/lib/dpkg/status"
 
 func collectDPKG(ctx context.Context, res *schema.ModuleResult, moduleID string) {
-	cmd := exec.CommandContext(ctx, "dpkg-query", "-W", "-f=${Package}\t${Version}\t${Architecture}\t${Status}\t${Source}\n")
-	out, err := cmd.Output()
+	before := len(res.Evidence)
+	_, err := streamCommandLines(ctx, func(line string) bool {
+		return appendDPKGQueryLine(res, moduleID, line)
+	}, "dpkg-query", "-W", "-f=${Package}\t${Version}\t${Architecture}\t${Status}\t${Source}\n")
 	if err == nil {
-		appendDPKGQueryLines(res, moduleID, string(out))
 		return
 	}
+	if ctx.Err() != nil {
+		// Keep what was read before the deadline.
+		res.Errors = append(res.Errors, common.Err(moduleID, "timeout", "dpkg-query: "+err.Error()))
+		return
+	}
+	// Drop rows from a failed run so the fallback does not duplicate them.
+	res.Evidence = res.Evidence[:before]
+	res.Truncated = false
 	res.Errors = append(res.Errors, common.Err(moduleID, "PACKAGE_DB_LOCKED", "dpkg-query: "+err.Error()))
 	// Fallback for broken/emulated userspace (e.g. pipe2 ENOSYS on old Metasploitable).
 	n, ferr := appendDPKGStatusFile(res, moduleID, dpkgStatusPath)
@@ -70,24 +98,25 @@ func collectDPKG(ctx context.Context, res *schema.ModuleResult, moduleID string)
 	res.Errors = append(res.Errors, common.Err(moduleID, "partial", "used /var/lib/dpkg/status fallback after dpkg-query failure"))
 }
 
-func appendDPKGQueryLines(res *schema.ModuleResult, moduleID, out string) {
-	sc := bufio.NewScanner(strings.NewReader(out))
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := sc.Text()
-		parts := strings.Split(line, "\t")
-		if len(parts) < 4 {
-			continue
-		}
-		srcRaw := ""
-		if len(parts) > 4 {
-			srcRaw = parts[4]
-		}
-		appendDPKGPackage(res, moduleID, parts[0], parts[1], parts[2], parts[3], srcRaw, "dpkg-query", map[string]string{
-			"raw_line":   line,
-			"source_raw": srcRaw,
-		})
+// appendDPKGQueryLine adds one dpkg-query row; false means the package limit
+// was reached and reading should stop.
+func appendDPKGQueryLine(res *schema.ModuleResult, moduleID, line string) bool {
+	parts := strings.Split(line, "\t")
+	if len(parts) < 4 {
+		return true
 	}
+	if !hostPackageRoom(res, moduleID) {
+		return false
+	}
+	srcRaw := ""
+	if len(parts) > 4 {
+		srcRaw = parts[4]
+	}
+	appendDPKGPackage(res, moduleID, parts[0], parts[1], parts[2], parts[3], srcRaw, "dpkg-query", map[string]string{
+		"raw_line":   line,
+		"source_raw": srcRaw,
+	})
+	return true
 }
 
 func appendDPKGStatusFile(res *schema.ModuleResult, moduleID, path string) (int, error) {
@@ -100,51 +129,52 @@ func appendDPKGStatusFile(res *schema.ModuleResult, moduleID, path string) (int,
 }
 
 func appendDPKGStatus(res *schema.ModuleResult, moduleID string, r io.Reader) (int, error) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	fields := map[string]string{}
-	flush := func() int {
-		name := fields["Package"]
-		status := fields["Status"]
-		if name == "" || !dpkgStatusInstalled(status) {
-			fields = map[string]string{}
-			return 0
-		}
-		arch := fields["Architecture"]
-		if arch == "" {
-			arch = "unknown"
-		}
-		ver := fields["Version"]
-		srcRaw := fields["Source"]
-		appendDPKGPackage(res, moduleID, name, ver, arch, status, srcRaw, "dpkg-status", map[string]string{
-			"source_raw": srcRaw,
-			"status_raw": status,
-		})
-		fields = map[string]string{}
-		return 1
-	}
 	n := 0
-	for sc.Scan() {
-		line := sc.Text()
-		if line == "" {
-			n += flush()
-			continue
+	err := scanDpkgStanzas(r, func(fields map[string]string) bool {
+		if !dpkgStanzaInstalled(fields, false) {
+			return true
 		}
-		if line[0] == ' ' || line[0] == '\t' {
-			// Continuation of previous field (Description, Conffiles, …) — ignore.
-			continue
+		if !hostPackageRoom(res, moduleID) {
+			return false
 		}
-		k, v, ok := strings.Cut(line, ":")
-		if !ok {
-			continue
+		appendDPKGStanza(res, moduleID, fields, "dpkg-status")
+		n++
+		return true
+	})
+	return n, err
+}
+
+// collectDPKGStatusD reads distroless-style /var/lib/dpkg/status.d stanzas.
+func collectDPKGStatusD(res *schema.ModuleResult, moduleID, dir string) {
+	err := scanDpkgStatusD(dir, func(fields map[string]string) bool {
+		if !hostPackageRoom(res, moduleID) {
+			return false
 		}
-		fields[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		appendDPKGStanza(res, moduleID, fields, "dpkg-status.d")
+		if v, ok := res.Evidence[len(res.Evidence)-1].Value.(map[string]any); ok {
+			v["package_database_path"] = dir
+		}
+		return true
+	})
+	if err != nil {
+		res.Errors = append(res.Errors, common.Err(moduleID, "partial", "dpkg status.d: "+err.Error()))
 	}
-	n += flush()
-	if err := sc.Err(); err != nil {
-		return n, err
+}
+
+func appendDPKGStanza(res *schema.ModuleResult, moduleID string, fields map[string]string, evidenceSource string) {
+	arch := fields["Architecture"]
+	if arch == "" {
+		arch = "unknown"
 	}
-	return n, nil
+	status := fields["Status"]
+	if status == "" {
+		status = "install ok installed"
+	}
+	srcRaw := fields["Source"]
+	appendDPKGPackage(res, moduleID, fields["Package"], fields["Version"], arch, status, srcRaw, evidenceSource, map[string]string{
+		"source_raw": srcRaw,
+		"status_raw": fields["Status"],
+	})
 }
 
 func dpkgStatusInstalled(status string) bool {
@@ -240,85 +270,89 @@ func rpmDatabasePresent(paths []string) bool {
 
 func collectRPM(ctx context.Context, res *schema.ModuleResult, moduleID string) {
 	format := "%{NAME}\t%{EPOCH}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\t%{VENDOR}\t%{INSTALLTIME}\t%{SOURCERPM}\n"
-	cmd := exec.CommandContext(ctx, "rpm", "-qa", "--qf", format)
-	out, err := cmd.Output()
+	_, err := streamCommandLines(ctx, func(line string) bool {
+		return appendRPMLine(res, moduleID, line)
+	}, "rpm", "-qa", "--qf", format)
 	if err != nil {
 		res.Errors = append(res.Errors, common.Err(moduleID, "PACKAGE_DB_LOCKED", "rpm: "+err.Error()))
-		return
 	}
-	sc := bufio.NewScanner(strings.NewReader(string(out)))
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := sc.Text()
-		parts := strings.Split(line, "\t")
-		if len(parts) < 5 {
-			continue
-		}
-		epoch := parts[1]
-		var epochVal any = epoch
-		if epoch == "(none)" || epoch == "" {
-			epochVal = nil
-			epoch = "0"
-		}
-		rawVersion := parts[2] + "-" + parts[3]
-		if epochVal != nil {
-			rawVersion = epoch + ":" + rawVersion
-		}
-		srcRPM := ""
-		if len(parts) > 7 {
-			srcRPM = parts[7]
-		}
-		srcName, srcVer, srcRel, ok := ParseSourceRPM(srcRPM)
-		value := map[string]any{
-			"entity_id":                 "pkg:rpm:" + parts[0] + ":" + parts[4] + ":" + rawVersion,
-			"entity_type":               "package",
-			"name":                      parts[0],
-			"epoch":                     epochVal,
-			"version":                   parts[2],
-			"release":                   parts[3],
-			"raw_version_string":        rawVersion,
-			"architecture":              parts[4],
-			"package_manager":           "rpm",
-			"package_status":            "installed",
-			"vendor":                    nullIfEmpty(get(parts, 5)),
-			"install_time":              nullIfEmpty(get(parts, 6)),
-			"source_package":            nil,
-			"source_version":            nil,
-			"repository_id":             nil,
-			"repository_name":           nil,
-			"repository_url":            nil,
-			"repository_component":      nil,
-			"repository_suite":          nil,
-			"repository_origin":         nil,
-			"repository_label":          nil,
-			"installed_from_repository": nil,
-			"package_database_path":     "/var/lib/rpm",
-		}
-		rels := []map[string]any{}
-		if ok {
-			value["source_package"] = srcName
-			value["source_version"] = srcVer + "-" + srcRel
-			rels = append(rels, map[string]any{
-				"type":             "package_built_from_source_package",
-				"target_entity_id": "srcpkg:rpm:" + srcName,
-				"confidence":       "direct",
-				"evidence_source":  "rpm:SOURCERPM",
-			})
-		} else if srcRPM != "" {
-			value["source_package"] = srcRPM
-			rels = append(rels, map[string]any{
-				"type":             "package_built_from_source_package",
-				"target_entity_id": "srcpkg:rpm:" + srcRPM,
-				"confidence":       "inferred",
-				"evidence_source":  "rpm:SOURCERPM_unparsed",
-			})
-		}
-		value["relationships"] = rels
-		res.Evidence = append(res.Evidence, common.Evidence("native", moduleID, "observed", value, map[string]string{
-			"raw_line":  line,
-			"sourcerpm": srcRPM,
-		}))
+}
+
+// appendRPMLine adds one rpm -qa row; false means the package limit was
+// reached and reading should stop.
+func appendRPMLine(res *schema.ModuleResult, moduleID, line string) bool {
+	parts := strings.Split(line, "\t")
+	if len(parts) < 5 {
+		return true
 	}
+	if !hostPackageRoom(res, moduleID) {
+		return false
+	}
+	epoch := parts[1]
+	var epochVal any = epoch
+	if epoch == "(none)" || epoch == "" {
+		epochVal = nil
+		epoch = "0"
+	}
+	rawVersion := parts[2] + "-" + parts[3]
+	if epochVal != nil {
+		rawVersion = epoch + ":" + rawVersion
+	}
+	srcRPM := ""
+	if len(parts) > 7 {
+		srcRPM = parts[7]
+	}
+	srcName, srcVer, srcRel, ok := ParseSourceRPM(srcRPM)
+	value := map[string]any{
+		"entity_id":                 "pkg:rpm:" + parts[0] + ":" + parts[4] + ":" + rawVersion,
+		"entity_type":               "package",
+		"name":                      parts[0],
+		"epoch":                     epochVal,
+		"version":                   parts[2],
+		"release":                   parts[3],
+		"raw_version_string":        rawVersion,
+		"architecture":              parts[4],
+		"package_manager":           "rpm",
+		"package_status":            "installed",
+		"vendor":                    nullIfEmpty(get(parts, 5)),
+		"install_time":              nullIfEmpty(get(parts, 6)),
+		"source_package":            nil,
+		"source_version":            nil,
+		"repository_id":             nil,
+		"repository_name":           nil,
+		"repository_url":            nil,
+		"repository_component":      nil,
+		"repository_suite":          nil,
+		"repository_origin":         nil,
+		"repository_label":          nil,
+		"installed_from_repository": nil,
+		"package_database_path":     "/var/lib/rpm",
+	}
+	rels := []map[string]any{}
+	if ok {
+		value["source_package"] = srcName
+		value["source_version"] = srcVer + "-" + srcRel
+		rels = append(rels, map[string]any{
+			"type":             "package_built_from_source_package",
+			"target_entity_id": "srcpkg:rpm:" + srcName,
+			"confidence":       "direct",
+			"evidence_source":  "rpm:SOURCERPM",
+		})
+	} else if srcRPM != "" {
+		value["source_package"] = srcRPM
+		rels = append(rels, map[string]any{
+			"type":             "package_built_from_source_package",
+			"target_entity_id": "srcpkg:rpm:" + srcRPM,
+			"confidence":       "inferred",
+			"evidence_source":  "rpm:SOURCERPM_unparsed",
+		})
+	}
+	value["relationships"] = rels
+	res.Evidence = append(res.Evidence, common.Evidence("native", moduleID, "observed", value, map[string]string{
+		"raw_line":  line,
+		"sourcerpm": srcRPM,
+	}))
+	return true
 }
 
 // apkInstalledPath is overridable in tests.
@@ -333,11 +367,15 @@ func collectAPK(res *schema.ModuleResult, moduleID, path string) {
 		return
 	}
 	defer f.Close()
-	pkgs, err := parseAPKDB(f, 0)
+	// One past the limit so a cut is detectable.
+	pkgs, err := parseAPKDB(f, hostPackageLimit+1)
 	if err != nil {
 		res.Errors = append(res.Errors, common.Err(moduleID, "partial", "apk installed db: "+err.Error()))
 	}
 	for _, p := range pkgs {
+		if !hostPackageRoom(res, moduleID) {
+			break
+		}
 		appendAPKPackage(res, moduleID, p, path)
 	}
 }

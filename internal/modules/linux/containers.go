@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,17 +15,22 @@ import (
 	"time"
 
 	"github.com/s4e-io/openness-collector/internal/modules/common"
+	"github.com/s4e-io/openness-collector/internal/procutil"
 	"github.com/s4e-io/openness-collector/internal/schema"
 )
 
-const maxContainerPackages = 500
+// maxContainerPackages caps package records per container (same cap as a
+// host); maxContainerPackagesTotal caps them across all containers so the
+// evidence file stays under its size limit.
+const maxContainerPackages = maxPackages
+const maxContainerPackagesTotal = 100000
 const maxContainersInspect = 40
 
 // Containers inventories Docker/Podman/containerd without mutating runtime state.
 type Containers struct{}
 
 func (m *Containers) ID() string          { return "containers" }
-func (m *Containers) Version() string     { return "1.0.0" }
+func (m *Containers) Version() string     { return "1.3.0" }
 func (m *Containers) Platforms() []string { return []string{"linux"} }
 
 func (m *Containers) Run(ctx context.Context) schema.ModuleResult {
@@ -41,6 +49,7 @@ func (m *Containers) Run(ctx context.Context) schema.ModuleResult {
 	foundRuntime := false
 	anyPartial := false
 	seenID := map[string]bool{}
+	pkgBudget := maxContainerPackagesTotal
 
 	for _, rt := range runtimes {
 		path, err := exec.LookPath(rt.bin)
@@ -100,27 +109,54 @@ func (m *Containers) Run(ctx context.Context) schema.ModuleResult {
 				}
 			}
 			// Package DB from overlay merged dir when readable (host-side, no exec into container).
+			limit := min(maxContainerPackages, pkgBudget)
 			rootfs := asString(ev["rootfs_path"])
+			if osr := readContainerOSRelease(ctx, path, id, rootfs); osr != nil {
+				ev["os_release"] = osr
+			}
 			var pkgs []map[string]any
+			var truncated bool
 			var perr string
-			if rootfs != "" {
-				pkgs, perr = readContainerPackages(rootfs)
-			}
-			// Fallback: docker/podman cp of package DB files (read-only, works when MergedDir not mounted).
-			if len(pkgs) == 0 {
-				pkgs2, perr2 := readContainerPackagesViaCopy(ctx, path, id)
-				if len(pkgs2) > 0 {
-					pkgs = pkgs2
-					ev["package_source"] = "runtime_cp"
-					perr = ""
-				} else if perr == "" {
-					perr = perr2
-				}
+			if limit == 0 {
+				truncated = true
 			} else {
-				ev["package_source"] = "rootfs"
+				if rootfs != "" {
+					pkgs, truncated, perr = readContainerPackages(ctx, rootfs, limit)
+				}
+				// Fallback: docker/podman cp of package DB files (read-only, works when MergedDir not mounted).
+				if len(pkgs) == 0 {
+					pkgs2, truncated2, perr2 := readContainerPackagesViaCopy(ctx, path, id, limit)
+					if len(pkgs2) > 0 {
+						pkgs, truncated = pkgs2, truncated2
+						ev["package_source"] = "runtime_cp"
+						// The copy succeeded, so a rootfs read error is moot.
+						perr = ""
+					} else if perr == "" {
+						perr = perr2
+					}
+				} else {
+					ev["package_source"] = "rootfs"
+				}
 			}
+			pkgBudget -= len(pkgs)
 			if perr != "" {
-				res.Errors = append(res.Errors, common.Err(m.ID(), "partial", shortID(id)+": "+perr))
+				code := "partial"
+				if pe := containerPackagesError(perr); pe != nil {
+					// A package database is there but was not read: the
+					// container's packages are unknown, not empty.
+					ev["packages_error"] = pe
+					code = "container_packages_unread"
+				}
+				res.Errors = append(res.Errors, common.Err(m.ID(), code, shortID(id)+": "+perr))
+				anyPartial = true
+			}
+			if truncated {
+				// Kept separate from perr so no later step can erase it.
+				res.Errors = append(res.Errors, common.Err(m.ID(), "package_limit_truncated",
+					shortID(id)+": package records capped at "+itoa(limit)))
+				ev["packages_truncated"] = true
+				ev["package_limit"] = limit
+				res.Truncated = true
 				anyPartial = true
 			}
 			if len(pkgs) > 0 {
@@ -170,7 +206,7 @@ func (m *Containers) Run(ctx context.Context) schema.ModuleResult {
 
 func listContainersCLI(ctx context.Context, bin string) ([]map[string]any, string, string) {
 	// Include stopped; never start/stop.
-	cmd := exec.CommandContext(ctx, bin, "ps", "-a", "--format", "{{json .}}")
+	cmd := procutil.Command(ctx, bin, "ps", "-a", "--format", "{{json .}}")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, "error", strings.TrimSpace(string(out)) + " " + err.Error()
@@ -199,7 +235,7 @@ func listContainersCLI(ctx context.Context, bin string) ([]map[string]any, strin
 }
 
 func inspectContainer(ctx context.Context, bin, id string) map[string]any {
-	cmd := exec.CommandContext(ctx, bin, "inspect", id)
+	cmd := procutil.Command(ctx, bin, "inspect", id)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return map[string]any{"inspect_error": strings.TrimSpace(string(out))}
@@ -309,7 +345,7 @@ func resolveImageDigest(ctx context.Context, bin, imageRef, imageID string) stri
 		if strings.TrimSpace(key) == "" {
 			continue
 		}
-		cmd := exec.CommandContext(ctx, bin, "image", "inspect", key, "--format", "{{json .RepoDigests}}")
+		cmd := procutil.Command(ctx, bin, "image", "inspect", key, "--format", "{{json .RepoDigests}}")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			continue
@@ -326,7 +362,7 @@ func resolveImageDigest(ctx context.Context, bin, imageRef, imageID string) stri
 			}
 		}
 		// fallback: Image ID is content-addressable even if not a registry digest
-		cmd2 := exec.CommandContext(ctx, bin, "image", "inspect", key, "--format", "{{.Id}}")
+		cmd2 := procutil.Command(ctx, bin, "image", "inspect", key, "--format", "{{.Id}}")
 		out2, err2 := cmd2.CombinedOutput()
 		if err2 == nil {
 			id := strings.TrimSpace(string(out2))
@@ -339,11 +375,11 @@ func resolveImageDigest(ctx context.Context, bin, imageRef, imageID string) stri
 }
 
 func listContainerd(ctx context.Context, res *schema.ModuleResult) (int, error) {
-	cmd := exec.CommandContext(ctx, "ctr", "-n", "moby", "containers", "ls", "-q")
+	cmd := procutil.Command(ctx, "ctr", "-n", "moby", "containers", "ls", "-q")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		// try default namespace
-		cmd = exec.CommandContext(ctx, "ctr", "containers", "ls", "-q")
+		cmd = procutil.Command(ctx, "ctr", "containers", "ls", "-q")
 		out, err = cmd.CombinedOutput()
 		if err != nil {
 			return 0, err
@@ -371,48 +407,136 @@ func listContainerd(ctx context.Context, res *schema.ModuleResult) (int, error) 
 	return n, nil
 }
 
-func readContainerPackages(rootfs string) ([]map[string]any, string) {
+// readContainerPackages reads the package database in a host-visible
+// container rootfs. The error string is a code, optionally followed by ": "
+// and a detail.
+// rpm_timeout, rpm_unavailable and package_read_failed mean a package
+// database is present but was not read (see containerPackagesError).
+func readContainerPackages(ctx context.Context, rootfs string, limit int) ([]map[string]any, bool, string) {
 	if rootfs == "" {
-		return nil, ""
+		return nil, false, ""
 	}
 	if st, err := os.Stat(rootfs); err != nil || !st.IsDir() {
-		return nil, "rootfs_unavailable"
+		return nil, false, "rootfs_unavailable"
 	}
 	var out []map[string]any
-	// dpkg
-	status := filepath.Join(rootfs, "var/lib/dpkg/status")
-	if b, err := os.ReadFile(status); err == nil {
-		out = append(out, parseDpkgStatus(string(b))...)
+	truncated := false
+	readErr := ""
+	noteErr := func(what string, err error) {
+		if err != nil && readErr == "" {
+			readErr = pkgErrReadFailed + ": " + what + ": " + err.Error()
+		}
+	}
+	// dpkg (status file and distroless status.d)
+	if f, err := os.Open(filepath.Join(rootfs, "var/lib/dpkg/status")); err == nil {
+		out, truncated, err = parseDpkgStatus(f, out, limit)
+		_ = f.Close()
+		noteErr("dpkg status", err)
+	} else if !os.IsNotExist(err) {
+		noteErr("dpkg status", err)
+	}
+	if !truncated {
+		var err error
+		out, truncated, err = parseDpkgStatusD(filepath.Join(rootfs, "var/lib/dpkg/status.d"), out, limit)
+		noteErr("dpkg status.d", err)
 	}
 	// apk
-	apk := filepath.Join(rootfs, "lib/apk/db/installed")
-	if b, err := os.ReadFile(apk); err == nil {
-		out = append(out, parseAPKInstalled(string(b))...)
+	if !truncated {
+		if f, err := os.Open(filepath.Join(rootfs, "lib/apk/db/installed")); err == nil {
+			out, truncated, err = parseAPKInstalled(f, out, limit)
+			_ = f.Close()
+			noteErr("apk installed db", err)
+		} else if !os.IsNotExist(err) {
+			noteErr("apk installed db", err)
+		}
 	}
 	// rpm sqlite/bdb is harder; try rpm -qa --root if rpm exists (read-only)
 	if len(out) == 0 {
+		hasDB := hasRPMDatabase(rootfs)
 		if _, err := exec.LookPath("rpm"); err == nil {
-			cmd := exec.Command("rpm", "--root", rootfs, "-qa", "--qf", `%{NAME}\t%{EPOCH}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\n`)
-			if b, err := cmd.Output(); err == nil {
-				out = append(out, parseRPMRoot(string(b))...)
+			stopped, err := streamCommandLines(ctx, func(line string) bool {
+				if len(out) >= limit {
+					return false
+				}
+				if p := parseRPMRootLine(line); p != nil {
+					out = append(out, p)
+				}
+				return true
+			}, "rpm", "--root", rootfs, "-qa", "--qf", `%{NAME}\t%{EPOCH}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\n`)
+			truncated = stopped
+			if err != nil && len(out) == 0 {
+				if ctx.Err() != nil {
+					return nil, false, pkgErrRPMTimeout
+				}
+				if hasDB {
+					return nil, false, pkgErrReadFailed + ": rpm --root: " + truncateStr(err.Error(), 200)
+				}
 			}
+		} else if hasDB {
+			return nil, false, pkgErrRPMUnavailable + ": rpm database present but rpm is not installed on the host"
 		}
 	}
 	if len(out) == 0 {
-		return nil, "no_package_database"
+		if readErr != "" {
+			return nil, false, readErr
+		}
+		return nil, false, "no_package_database"
 	}
-	if len(out) >= maxContainerPackages {
-		out = out[:maxContainerPackages]
-		return out, "package_limit_truncated"
+	return out, truncated, readErr
+}
+
+// Package read error codes for a container whose package database is present
+// but could not be read.
+const (
+	pkgErrRPMTimeout     = "rpm_timeout"
+	pkgErrRPMUnavailable = "rpm_unavailable"
+	pkgErrReadFailed     = "package_read_failed"
+)
+
+// pkgErrMessages are the default messages when an error carries no detail.
+var pkgErrMessages = map[string]string{
+	pkgErrRPMTimeout:     "rpm --root did not finish before the module deadline",
+	pkgErrRPMUnavailable: "rpm database present but rpm is not installed on the host",
+	pkgErrReadFailed:     "package database could not be read",
+}
+
+// containerPackagesError maps a package read error to the container record's
+// packages_error object, or nil when the error does not mean an unread
+// package database (no_package_database, rootfs_unavailable, ...).
+func containerPackagesError(perr string) map[string]any {
+	code, detail, _ := strings.Cut(perr, ": ")
+	msg, ok := pkgErrMessages[code]
+	if !ok {
+		return nil
 	}
-	return out, ""
+	if detail != "" {
+		msg = detail
+	}
+	return map[string]any{"code": code, "message": msg}
+}
+
+// rpmDatabasePaths are rpmdb files relative to a root: the classic location
+// and the /usr/lib/sysimage one used by newer RPM distributions.
+var rpmDatabasePaths = []string{
+	"var/lib/rpm/rpmdb.sqlite", "var/lib/rpm/Packages", "var/lib/rpm/Packages.db",
+	"usr/lib/sysimage/rpm/rpmdb.sqlite", "usr/lib/sysimage/rpm/Packages", "usr/lib/sysimage/rpm/Packages.db",
+}
+
+// hasRPMDatabase reports whether rootfs holds an rpm database file.
+func hasRPMDatabase(rootfs string) bool {
+	for _, p := range rpmDatabasePaths {
+		if _, err := os.Lstat(filepath.Join(rootfs, p)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // readContainerPackagesViaCopy copies package DB files out via runtime CLI (read-only).
-func readContainerPackagesViaCopy(ctx context.Context, bin, containerID string) ([]map[string]any, string) {
+func readContainerPackagesViaCopy(ctx context.Context, bin, containerID string, limit int) ([]map[string]any, bool, string) {
 	tmp, err := os.MkdirTemp("", "openness-ctr-pkg-*")
 	if err != nil {
-		return nil, "tmpdir_failed"
+		return nil, false, "tmpdir_failed"
 	}
 	defer os.RemoveAll(tmp)
 
@@ -421,79 +545,121 @@ func readContainerPackagesViaCopy(ctx context.Context, bin, containerID string) 
 		kind string
 	}{
 		{"/var/lib/dpkg/status", "dpkg"},
+		{"/var/lib/dpkg/status.d", "dpkg-status.d"},
 		{"/lib/apk/db/installed", "apk"},
 		{"/var/lib/apk/db/installed", "apk"},
 	}
 	var out []map[string]any
+	truncated := false
+	readErr := ""
 	for _, c := range candidates {
 		dst := filepath.Join(tmp, filepath.Base(c.src)+"."+c.kind)
-		cmd := exec.CommandContext(ctx, bin, "cp", containerID+":"+c.src, dst)
+		cmd := procutil.Command(ctx, bin, "cp", containerID+":"+c.src, dst)
 		if err := cmd.Run(); err != nil {
 			continue
 		}
-		b, err := os.ReadFile(dst)
-		if err != nil || len(b) == 0 {
-			continue
+		var perr error
+		if c.kind == "dpkg-status.d" {
+			out, truncated, perr = parseDpkgStatusD(dst, out, limit)
+		} else if f, err := os.Open(dst); err == nil {
+			if c.kind == "dpkg" {
+				out, truncated, perr = parseDpkgStatus(f, out, limit)
+			} else {
+				out, truncated, perr = parseAPKInstalled(f, out, limit)
+			}
+			_ = f.Close()
+		} else {
+			perr = err
 		}
-		switch c.kind {
-		case "dpkg":
-			out = append(out, parseDpkgStatus(string(b))...)
-		case "apk":
-			out = append(out, parseAPKInstalled(string(b))...)
+		if perr != nil && readErr == "" {
+			readErr = pkgErrReadFailed + ": " + c.src + ": " + perr.Error()
 		}
 		if len(out) > 0 {
 			break
 		}
 	}
 	if len(out) == 0 {
-		return nil, "no_package_database"
+		if readErr != "" {
+			return nil, false, readErr
+		}
+		return nil, false, "no_package_database"
 	}
-	if len(out) >= maxContainerPackages {
-		out = out[:maxContainerPackages]
-		return out, "package_limit_truncated"
-	}
-	return out, ""
+	return out, truncated, readErr
 }
 
-func parseDpkgStatus(s string) []map[string]any {
-	var out []map[string]any
-	blocks := strings.Split(s, "\n\n")
-	for _, block := range blocks {
-		name, ver, arch, status := "", "", "", ""
-		for _, line := range strings.Split(block, "\n") {
-			if strings.HasPrefix(line, "Package: ") {
-				name = strings.TrimSpace(strings.TrimPrefix(line, "Package: "))
-			} else if strings.HasPrefix(line, "Version: ") {
-				ver = strings.TrimSpace(strings.TrimPrefix(line, "Version: "))
-			} else if strings.HasPrefix(line, "Architecture: ") {
-				arch = strings.TrimSpace(strings.TrimPrefix(line, "Architecture: "))
-			} else if strings.HasPrefix(line, "Status: ") {
-				status = strings.TrimSpace(strings.TrimPrefix(line, "Status: "))
-			}
+// parseDpkgStatus appends installed packages from a dpkg status stream to out
+// and stops at limit records; the bool reports that packages were left out.
+func parseDpkgStatus(r io.Reader, out []map[string]any, limit int) ([]map[string]any, bool, error) {
+	truncated := false
+	err := scanDpkgStanzas(r, func(fields map[string]string) bool {
+		if !dpkgStanzaInstalled(fields, false) {
+			return true
 		}
-		if name == "" || !strings.Contains(status, "installed") {
-			continue
+		if len(out) >= limit {
+			truncated = true
+			return false
 		}
-		out = append(out, map[string]any{
-			"entity_type":        "package",
-			"entity_id":          "pkg:container:dpkg:" + name + ":" + arch + ":" + ver,
-			"name":               name,
-			"raw_version_string": ver,
-			"architecture":       arch,
-			"package_manager":    "dpkg",
-			"packages_scope":     "container",
-			"package_status":     status,
-		})
-		if len(out) >= maxContainerPackages {
-			break
-		}
-	}
-	return out
+		out = append(out, containerDpkgRecord(fields))
+		return true
+	})
+	return out, truncated, err
 }
 
-func parseAPKInstalled(s string) []map[string]any {
-	pkgs, _ := parseAPKDB(strings.NewReader(s), maxContainerPackages)
-	out := make([]map[string]any, 0, len(pkgs))
+// parseDpkgStatusD is parseDpkgStatus for a distroless status.d directory.
+// A missing directory is not an error.
+func parseDpkgStatusD(dir string, out []map[string]any, limit int) ([]map[string]any, bool, error) {
+	truncated := false
+	err := scanDpkgStatusD(dir, func(fields map[string]string) bool {
+		if len(out) >= limit {
+			truncated = true
+			return false
+		}
+		out = append(out, containerDpkgRecord(fields))
+		return true
+	})
+	if errors.Is(err, fs.ErrNotExist) {
+		err = nil
+	}
+	return out, truncated, err
+}
+
+func containerDpkgRecord(fields map[string]string) map[string]any {
+	name, ver, arch := fields["Package"], fields["Version"], fields["Architecture"]
+	status := fields["Status"]
+	if status == "" {
+		status = "install ok installed"
+	}
+	// Vendor rules are keyed by source package, so the dpkg Source field is
+	// kept as on the host; without it the source is the binary name.
+	srcName, srcVer := ParseDebianSource(fields["Source"])
+	if srcName == "" {
+		srcName = name
+	}
+	return map[string]any{
+		"source_package":     srcName,
+		"source_version":     srcVer,
+		"entity_type":        "package",
+		"entity_id":          "pkg:container:dpkg:" + name + ":" + arch + ":" + ver,
+		"name":               name,
+		"raw_version_string": ver,
+		"architecture":       arch,
+		"package_manager":    "dpkg",
+		"packages_scope":     "container",
+		"package_status":     status,
+	}
+}
+
+func parseAPKInstalled(r io.Reader, out []map[string]any, limit int) ([]map[string]any, bool, error) {
+	room := limit - len(out)
+	if room <= 0 {
+		return out, true, nil
+	}
+	// One past the room so a cut is detectable.
+	pkgs, err := parseAPKDB(r, room+1)
+	truncated := len(pkgs) > room
+	if truncated {
+		pkgs = pkgs[:room]
+	}
 	for _, p := range pkgs {
 		out = append(out, map[string]any{
 			"entity_type":        "package",
@@ -505,39 +671,126 @@ func parseAPKInstalled(s string) []map[string]any {
 			"packages_scope":     "container",
 		})
 	}
-	return out
+	return out, truncated, err
 }
 
-func parseRPMRoot(s string) []map[string]any {
-	var out []map[string]any
-	sc := bufio.NewScanner(strings.NewReader(s))
-	for sc.Scan() {
-		parts := strings.Split(sc.Text(), "\t")
-		if len(parts) < 5 {
+func parseRPMRootLine(line string) map[string]any {
+	parts := strings.Split(line, "\t")
+	if len(parts) < 5 {
+		return nil
+	}
+	epoch := parts[1]
+	if epoch == "(none)" {
+		epoch = ""
+	}
+	raw := parts[2] + "-" + parts[3]
+	if epoch != "" {
+		raw = epoch + ":" + raw
+	}
+	return map[string]any{
+		"entity_type":        "package",
+		"entity_id":          "pkg:container:rpm:" + parts[0] + ":" + parts[4] + ":" + raw,
+		"name":               parts[0],
+		"epoch":              nullIfEmpty(epoch),
+		"version":            parts[2],
+		"release":            parts[3],
+		"architecture":       parts[4],
+		"raw_version_string": raw,
+		"package_manager":    "rpm",
+		"packages_scope":     "container",
+	}
+}
+
+// osReleaseFiles are the os-release locations, in os-release(5) order.
+var osReleaseFiles = []string{"/etc/os-release", "/usr/lib/os-release"}
+
+// maxOSReleaseBytes bounds an os-release read; real files are a few hundred bytes.
+const maxOSReleaseBytes = 64 << 10
+
+// readContainerOSRelease returns the container's os-release identity, read
+// from the host-visible rootfs or, failing that, copied out with the runtime
+// CLI (read-only). It returns nil when neither path has an os-release file.
+func readContainerOSRelease(ctx context.Context, bin, containerID, rootfs string) map[string]any {
+	if rootfs != "" {
+		for _, f := range osReleaseFiles {
+			if raw := readRootfsOSRelease(rootfs, f); raw != nil {
+				return osReleaseIdentity(raw, "rootfs", f)
+			}
+		}
+	}
+	if bin == "" || containerID == "" {
+		return nil
+	}
+	tmp, err := os.MkdirTemp("", "openness-ctr-osr-*")
+	if err != nil {
+		return nil
+	}
+	defer os.RemoveAll(tmp)
+	for i, f := range osReleaseFiles {
+		dst := filepath.Join(tmp, "os-release."+itoa(i))
+		if err := procutil.Command(ctx, bin, "cp", containerID+":"+f, dst).Run(); err != nil {
 			continue
 		}
-		epoch := parts[1]
-		if epoch == "(none)" {
-			epoch = ""
+		// docker cp copies a symlink as a link (/etc/os-release usually is
+		// one); only a regular file is read, so a link never leads to a host
+		// file. The next candidate is the link target on most images.
+		if raw := readOSReleaseFile(dst); raw != nil {
+			return osReleaseIdentity(raw, "runtime_cp", f)
 		}
-		raw := parts[2] + "-" + parts[3]
-		if epoch != "" {
-			raw = epoch + ":" + raw
+	}
+	return nil
+}
+
+// readRootfsOSRelease reads rel inside rootfs. A symlink is followed one
+// level and only inside rootfs (absolute targets are re-rooted).
+func readRootfsOSRelease(rootfs, rel string) map[string]string {
+	p := filepath.Join(rootfs, rel)
+	if target, err := os.Readlink(p); err == nil {
+		if filepath.IsAbs(target) {
+			p = filepath.Join(rootfs, target)
+		} else {
+			p = filepath.Join(rootfs, filepath.Dir(rel), target)
 		}
-		out = append(out, map[string]any{
-			"entity_type":        "package",
-			"entity_id":          "pkg:container:rpm:" + parts[0] + ":" + parts[4] + ":" + raw,
-			"name":               parts[0],
-			"epoch":              nullIfEmpty(epoch),
-			"version":            parts[2],
-			"release":            parts[3],
-			"architecture":       parts[4],
-			"raw_version_string": raw,
-			"package_manager":    "rpm",
-			"packages_scope":     "container",
-		})
-		if len(out) >= maxContainerPackages {
-			break
+		if !strings.HasPrefix(p, filepath.Clean(rootfs)+string(filepath.Separator)) {
+			return nil
+		}
+	}
+	return readOSReleaseFile(p)
+}
+
+// readOSReleaseFile parses a regular os-release file; nil when the path is
+// missing, not a regular file, too large or has no identity.
+func readOSReleaseFile(path string) map[string]string {
+	st, err := os.Lstat(path)
+	if err != nil || !st.Mode().IsRegular() || st.Size() > maxOSReleaseBytes {
+		return nil
+	}
+	raw, err := readKeyValueFile(path)
+	if err != nil || (strings.TrimSpace(raw["ID"]) == "" && strings.TrimSpace(raw["NAME"]) == "") {
+		return nil
+	}
+	normalizeOsReleaseKeys(raw)
+	return raw
+}
+
+// osReleaseIdentity maps os-release keys to the container record's
+// os_release object. Absent keys are left out.
+func osReleaseIdentity(raw map[string]string, source, file string) map[string]any {
+	out := map[string]any{"source": source, "source_file": file}
+	for _, k := range []struct{ key, field string }{
+		{"ID", "id"},
+		{"ID_LIKE", "id_like"},
+		{"NAME", "name"},
+		{"VERSION_ID", "version_id"},
+		{"VERSION_CODENAME", "version_codename"},
+		{"PRETTY_NAME", "pretty_name"},
+	} {
+		v := strings.TrimSpace(raw[k.key])
+		if k.key == "ID_LIKE" {
+			v = strings.ToLower(v)
+		}
+		if v != "" {
+			out[k.field] = v
 		}
 	}
 	return out

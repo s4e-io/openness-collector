@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,6 +150,14 @@ func CheckToken(ctx context.Context, checkURL, token string) (*CheckResult, erro
 	if checkURL == "" {
 		checkURL = DefaultCheckURL
 	}
+	u, err := url.Parse(checkURL)
+	if err != nil {
+		return nil, fmt.Errorf("token check URL must be HTTPS or loopback HTTP without credentials")
+	}
+	loopbackHTTP := u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "::1")
+	if (u.Scheme != "https" && !loopbackHTTP) || u.Host == "" || u.User != nil {
+		return nil, fmt.Errorf("token check URL must be HTTPS or loopback HTTP without credentials")
+	}
 	token = strings.TrimSpace(token)
 	if len(token) < 32 {
 		return nil, fmt.Errorf("token looks too short")
@@ -160,7 +169,10 @@ func CheckToken(ctx context.Context, checkURL, token string) (*CheckResult, erro
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "openness-collector")
-	client := &http.Client{Timeout: 30 * time.Second}
+	// A 307/308 can replay the JSON body containing the token to another host.
+	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -180,7 +192,7 @@ func CheckToken(ctx context.Context, checkURL, token string) (*CheckResult, erro
 		apiCode = resp.StatusCode
 	}
 	out.Message = strings.TrimSpace(parsed.Message)
-	if apiCode >= 200 && apiCode < 300 {
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 && apiCode >= 200 && apiCode < 300 {
 		out.OK = true
 		if out.Message == "" {
 			out.Message = "token valid"

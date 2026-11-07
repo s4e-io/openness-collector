@@ -152,14 +152,13 @@ func (e *Engine) Run(ctx context.Context) (*schema.Document, error) {
 		if !common.Supports(mod.Platforms(), runtime.GOOS) {
 			continue
 		}
-		mctx := ctx
-		var cancel context.CancelFunc
-		if e.opts.ModuleTimeout > 0 {
-			mctx, cancel = context.WithTimeout(ctx, e.opts.ModuleTimeout)
-		}
-		result := mod.Run(mctx)
-		if cancel != nil {
-			cancel()
+		var result schema.ModuleResult
+		if ctx.Err() != nil {
+			// The global deadline already fired: record the module instead of
+			// starting it.
+			result = timedOutResult(mod, time.Now(), "not started: collection timeout reached")
+		} else {
+			result = e.runModule(ctx, mod)
 		}
 		if e.shouldForceFail(mod.ID()) {
 			result.Status = "error"
@@ -186,6 +185,83 @@ func (e *Engine) Run(ctx context.Context) (*schema.Document, error) {
 		doc.Collection.Status = "partial"
 	}
 	return doc, nil
+}
+
+// ShrinkLargestModule is the last resort when the evidence file would exceed
+// its size limit: it keeps the first half of the evidence of the module with
+// the most records, records output_size_truncated on that module and marks
+// the collection partial. It returns false when nothing is left to shrink.
+func (e *Engine) ShrinkLargestModule(doc *schema.Document) bool {
+	idx := -1
+	for i := range doc.Modules {
+		if n := len(doc.Modules[i].Evidence); n > 1 && (idx < 0 || n > len(doc.Modules[idx].Evidence)) {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		return false
+	}
+	mod := &doc.Modules[idx]
+	mod.Evidence = mod.Evidence[:len(mod.Evidence)/2]
+	mod.Records = len(mod.Evidence)
+	if !mod.Truncated {
+		mod.Truncated = true
+		entry := common.Err(mod.ModuleID, "output_size_truncated",
+			"evidence records cut to keep the evidence file under its size limit")
+		mod.Errors = append(mod.Errors, entry)
+		doc.Errors = append(doc.Errors, entry)
+	}
+	if mod.Status == "success" {
+		mod.Status = "partial"
+	}
+	doc.Collection.Partial = true
+	doc.Collection.Status = "partial"
+	e.mergeModule(doc, *mod)
+	return true
+}
+
+// moduleGrace is how long a module may take to hand back its (partial)
+// result after its context was cancelled before the engine stops waiting.
+var moduleGrace = 3 * time.Second
+
+// runModule runs one module in its own goroutine and enforces both the module
+// timeout and the global deadline: when the context ends and the module does
+// not return within moduleGrace, the module is recorded as timed out and the
+// goroutine is abandoned (its external commands are already killed through
+// the same context).
+func (e *Engine) runModule(ctx context.Context, mod common.Module) schema.ModuleResult {
+	started := time.Now()
+	mctx, cancel := ctx, context.CancelFunc(func() {})
+	if e.opts.ModuleTimeout > 0 {
+		mctx, cancel = context.WithTimeout(ctx, e.opts.ModuleTimeout)
+	}
+	defer cancel()
+	done := make(chan schema.ModuleResult, 1)
+	go func() { done <- mod.Run(mctx) }()
+	select {
+	case r := <-done:
+		return r
+	case <-mctx.Done():
+	}
+	t := time.NewTimer(moduleGrace)
+	defer t.Stop()
+	select {
+	case r := <-done:
+		return r
+	case <-t.C:
+		msg := "module timeout reached; result abandoned"
+		if ctx.Err() != nil {
+			msg = "collection timeout reached; result abandoned"
+		}
+		return timedOutResult(mod, started, msg)
+	}
+}
+
+func timedOutResult(mod common.Module, started time.Time, msg string) schema.ModuleResult {
+	res := common.NewResult(mod.ID(), mod.Version())
+	res.Errors = append(res.Errors, common.Err(mod.ID(), "timeout", msg))
+	common.Finish(&res, started, "error")
+	return res
 }
 
 // stableAssetID derives the asset id from the OS machine identity

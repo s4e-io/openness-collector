@@ -8,6 +8,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,11 +37,9 @@ func ValidateURL(apiURL string, allowInsecure bool) error {
 	if apiURL == "" {
 		return fmt.Errorf("api url required")
 	}
-	lower := strings.ToLower(apiURL)
-	if strings.HasPrefix(lower, "https://") {
-		return nil
-	}
-	if allowInsecure && strings.HasPrefix(lower, "http://") {
+	u, err := url.Parse(apiURL)
+	if err == nil && u.Host != "" && u.User == nil &&
+		(u.Scheme == "https" || allowInsecure && u.Scheme == "http") {
 		return nil
 	}
 	return fmt.Errorf("upload URL must be https:// (pass AllowInsecure / --allow-insecure-upload for http://)")
@@ -88,7 +87,11 @@ func UploadFile(ctx context.Context, path string, opts Options) (*Receipt, error
 	if retries <= 0 {
 		retries = 3
 	}
-	client := &http.Client{Timeout: timeout}
+	// Never forward either token header to a redirect target. In particular,
+	// Go only strips Authorization on cross-host redirects, not X-Openness-Token.
+	client := &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
 	ua := "openness/" + version.SemVer()
 	var lastErr error
 	for attempt := 0; attempt <= retries; attempt++ {

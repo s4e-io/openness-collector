@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/s4e-io/openness-collector/internal/modules/common"
+	"github.com/s4e-io/openness-collector/internal/procutil"
 	"github.com/s4e-io/openness-collector/internal/schema"
 )
 
@@ -19,7 +19,7 @@ func runPowerShell(ctx context.Context, script string) (string, error) {
 	if err := requirePowerShell3(ctx); err != nil {
 		return "", err
 	}
-	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+	cmd := procutil.Command(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
@@ -61,7 +61,7 @@ func requirePowerShell3(ctx context.Context) error {
 func probePowerShellMajor(ctx context.Context) (int, error) {
 	pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(pctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+	cmd := procutil.Command(pctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
 		"if ($PSVersionTable) { $PSVersionTable.PSVersion.Major } else { 1 }")
 	out, err := cmd.Output()
 	if err != nil {

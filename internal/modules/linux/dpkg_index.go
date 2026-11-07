@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/s4e-io/openness-collector/internal/procutil"
 )
 
 // dpkgPkgRec matches packages module entity identity:
@@ -59,7 +61,7 @@ func (idx *dpkgOwnershipIndex) ensure() {
 }
 
 func (idx *dpkgOwnershipIndex) loadPackages(ctx context.Context) {
-	cmd := exec.CommandContext(ctx, "dpkg-query", "-W", "-f=${Package}\t${Version}\t${Architecture}\t${Source}\n")
+	cmd := procutil.Command(ctx, "dpkg-query", "-W", "-f=${Package}\t${Version}\t${Architecture}\t${Source}\n")
 	out, err := cmd.Output()
 	if err != nil {
 		idx.loadErr = "dpkg-query -W: " + err.Error()

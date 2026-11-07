@@ -3,12 +3,12 @@ package darwin
 import (
 	"context"
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/s4e-io/openness-collector/internal/modules/common"
+	"github.com/s4e-io/openness-collector/internal/procutil"
 	"github.com/s4e-io/openness-collector/internal/schema"
 )
 
@@ -58,7 +58,7 @@ func (m *OSInventory) Run(ctx context.Context) schema.ModuleResult {
 }
 
 func firstLine(ctx context.Context, name string, args ...string) string {
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procutil.Command(ctx, name, args...)
 	b, err := cmd.Output()
 	if err != nil {
 		return ""
