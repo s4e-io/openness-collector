@@ -159,9 +159,8 @@ func TestPackagesRunUsesAPKWhenNoDpkgOrRpm(t *testing.T) {
 	if err := os.WriteFile(db, []byte(apkFixture), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	old := apkInstalledPath
+	isolatePackageDBs(t, dir)
 	apkInstalledPath = db
-	t.Cleanup(func() { apkInstalledPath = old })
 	// Hide dpkg-query and rpm.
 	t.Setenv("PATH", dir)
 
@@ -176,13 +175,12 @@ func TestPackagesRunUsesAPKWhenNoDpkgOrRpm(t *testing.T) {
 
 func TestPackagesRunUnavailableWithoutAnyDB(t *testing.T) {
 	dir := t.TempDir()
-	old := apkInstalledPath
-	apkInstalledPath = filepath.Join(dir, "missing")
-	t.Cleanup(func() { apkInstalledPath = old })
+	isolatePackageDBs(t, dir)
 	t.Setenv("PATH", dir)
 
 	res := (&Packages{}).Run(t.Context())
-	if res.Status != "unavailable" || len(res.Errors) != 1 || res.Errors[0].Message != "no supported package manager found" {
+	if res.Status != "unavailable" || len(res.Errors) != 1 || res.Errors[0].Code != "no_packages" ||
+		res.Errors[0].Message != "no supported package manager found" {
 		t.Fatalf("status=%q errors=%v", res.Status, res.Errors)
 	}
 }

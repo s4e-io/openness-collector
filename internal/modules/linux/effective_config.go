@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/s4e-io/openness-collector/internal/procutil"
 )
 
 // collectOpenSSHEffective gathers effective sshd settings via allowlisted `sshd -T`.
@@ -53,7 +55,7 @@ func collectOpenSSHEffective(ctx context.Context) map[string]any {
 	sources = append(sources, dropins...)
 	out["configuration_sources"] = uniqueStrings(sources)
 
-	cmd := exec.CommandContext(ctx, bin, "-T")
+	cmd := procutil.Command(ctx, bin, "-T")
 	b, err := cmd.CombinedOutput()
 	s := strings.TrimSpace(string(b))
 	if err != nil {
@@ -419,7 +421,7 @@ func firewallProbeUFW(ctx context.Context) map[string]any {
 		r["status"] = "tool_not_installed"
 		return r
 	}
-	cmd := exec.CommandContext(ctx, "ufw", "status")
+	cmd := procutil.Command(ctx, "ufw", "status")
 	b, err := cmd.CombinedOutput()
 	s := strings.TrimSpace(string(b))
 	if err != nil {
@@ -454,7 +456,7 @@ func firewallProbeFirewalld(ctx context.Context) map[string]any {
 		r["service"] = svc.asMap()
 		return r
 	}
-	cmd := exec.CommandContext(ctx, "firewall-cmd", "--state")
+	cmd := procutil.Command(ctx, "firewall-cmd", "--state")
 	b, err := cmd.CombinedOutput()
 	s := strings.TrimSpace(string(b))
 	if err != nil {
@@ -486,7 +488,7 @@ func firewallProbeNft(ctx context.Context) map[string]any {
 		r["status"] = "tool_not_installed"
 		return r
 	}
-	cmd := exec.CommandContext(ctx, "nft", "list", "ruleset")
+	cmd := procutil.Command(ctx, "nft", "list", "ruleset")
 	b, err := cmd.CombinedOutput()
 	s := string(b)
 	if err != nil {
@@ -520,7 +522,7 @@ func firewallProbeIptables(ctx context.Context) map[string]any {
 		return r
 	}
 	// Detect nft compatibility backend without mutation.
-	cmd := exec.CommandContext(ctx, "iptables", "-V")
+	cmd := procutil.Command(ctx, "iptables", "-V")
 	b, _ := cmd.CombinedOutput()
 	ver := strings.TrimSpace(string(b))
 	r["version"] = ver
@@ -529,7 +531,7 @@ func firewallProbeIptables(ctx context.Context) map[string]any {
 	} else if ver != "" {
 		r["backend"] = "legacy_or_unknown"
 	}
-	cmd = exec.CommandContext(ctx, "iptables", "-S")
+	cmd = procutil.Command(ctx, "iptables", "-S")
 	b, err := cmd.CombinedOutput()
 	s := string(b)
 	if err != nil {

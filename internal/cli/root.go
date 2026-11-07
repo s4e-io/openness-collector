@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -50,7 +51,14 @@ func NewRoot() *cobra.Command {
 	root := &cobra.Command{
 		Use:   BinaryName,
 		Short: "Openness local endpoint evidence collector",
+		// Runtime errors (disk full, read-only output, size limit) print only
+		// the error; usage text is for flag mistakes (see SetFlagErrorFunc).
+		SilenceUsage: true,
 	}
+	root.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
+		c.PrintErrln(c.UsageString())
+		return err
+	})
 	root.AddCommand(newCollect())
 	root.AddCommand(newValidate())
 	root.AddCommand(newInspect())
@@ -145,6 +153,11 @@ func newCollect() *cobra.Command {
 				return err
 			}
 			path, err := evidencefile.Write(outputPath, doc, compress)
+			// Collection limits normally keep the file small; if it is still
+			// too large, cut the largest module and record that as partial.
+			for errors.Is(err, evidencefile.ErrTooLarge) && engine.ShrinkLargestModule(doc) {
+				path, err = evidencefile.Write(outputPath, doc, compress)
+			}
 			if err != nil {
 				return err
 			}

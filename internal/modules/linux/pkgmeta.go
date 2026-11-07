@@ -3,8 +3,11 @@ package linux
 import (
 	"context"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/s4e-io/openness-collector/internal/procutil"
 )
 
 // ParseDebianSource parses dpkg Source field values.
@@ -88,7 +91,7 @@ func PackageOwner(ctx context.Context, path string) map[string]any {
 	candidates := ownershipPathCandidates(path)
 	if _, err := exec.LookPath("dpkg-query"); err == nil {
 		for _, cand := range candidates {
-			cmd := exec.CommandContext(ctx, "dpkg-query", "-S", cand)
+			cmd := procutil.Command(ctx, "dpkg-query", "-S", cand)
 			b, err := cmd.CombinedOutput()
 			s := strings.TrimSpace(string(b))
 			if err == nil && s != "" && !strings.Contains(strings.ToLower(s), "no path found") {
@@ -113,7 +116,7 @@ func PackageOwner(ctx context.Context, path string) map[string]any {
 	}
 	if _, err := exec.LookPath("rpm"); err == nil {
 		for _, cand := range candidates {
-			cmd := exec.CommandContext(ctx, "rpm", "-qf", cand)
+			cmd := procutil.Command(ctx, "rpm", "-qf", cand)
 			b, err := cmd.CombinedOutput()
 			s := strings.TrimSpace(string(b))
 			if err == nil && s != "" && !strings.Contains(s, "not owned") {
@@ -143,8 +146,9 @@ func ownershipPathCandidates(path string) []string {
 		out = append(out, p)
 	}
 	add(path)
-	if r, err := exec.Command("readlink", "-f", path).Output(); err == nil {
-		add(strings.TrimSpace(string(r)))
+	// In-process symlink resolution: no helper process that could hang.
+	if r, err := filepath.EvalSymlinks(path); err == nil {
+		add(r)
 	}
 	// /usr-merge twins
 	twins := [][2]string{
