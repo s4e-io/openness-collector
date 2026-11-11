@@ -12,6 +12,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ### Security
 
 - The collector token is no longer sent on a redirect to another host.
+- Go toolchain 1.26.11: fixes the standard library `net/http` vulnerability GO-2026-6859 that govulncheck reports for 1.26.10.
 
 ### Added
 
