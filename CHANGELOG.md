@@ -7,6 +7,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-11
+
+### Security
+
+- The collector token is no longer sent on a redirect to another host.
+
+### Added
+
+- Release files without the version in the name (`openness-collector_<os>_<arch>`), so `releases/latest/download/` links always serve the newest release.
+
 ### Fixed
 
 - Timeouts are hard. Every external command runs in its own process group bound to the collection deadline and the whole group is killed on cancel, so a hung helper (for example `rpm --root` inside a container rootfs) can no longer keep the collector waiting. `--timeout` is a global deadline: modules that do not return in time are recorded with error code `timeout`, modules not started yet are recorded the same way, and the evidence collected so far is written as `partial`.
