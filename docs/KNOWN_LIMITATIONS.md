@@ -1,6 +1,6 @@
 # Known limitations
 
-Current product versions in code: collector **0.8.0**, schema **1.6.0**.
+Current product versions in code: collector **0.9.0**, schema **1.6.0**.
 
 Honest scope for assessors. A `collection.status=complete` result means selected modules finished without reported errors. It does **not** mean every possible OS surface was covered.
 
