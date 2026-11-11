@@ -1,11 +1,59 @@
 package auth
 
 import (
+	"context"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
+
+type redirectTransport func(*http.Request) (*http.Response, error)
+
+func (f redirectTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestCheckTokenRejectsInsecureURLAndRedirect(t *testing.T) {
+	for _, checkURL := range []string{"http://example.com/check", "http://localhost/check", "http://127.0.0.1.evil.example/check", "https://user:pass@example.com/check"} {
+		if _, err := CheckToken(context.Background(), checkURL, strings.Repeat("x", 32)); err == nil {
+			t.Fatalf("expected %q to be rejected", checkURL)
+		}
+	}
+	var leaked bool
+	old := http.DefaultTransport
+	http.DefaultTransport = redirectTransport(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "target.example" {
+			leaked = r.ContentLength > 0
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+		}
+		return &http.Response{StatusCode: http.StatusTemporaryRedirect, Body: io.NopCloser(strings.NewReader(`{"code":200}`)),
+			Header: http.Header{"Location": {"http://target.example/check"}}}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = old })
+	res, err := CheckToken(context.Background(), "https://source.example/check", strings.Repeat("x", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OK || leaked {
+		t.Fatalf("redirect followed or accepted: ok=%v leaked=%v", res.OK, leaked)
+	}
+}
+
+func TestCheckTokenAcceptsLoopbackHTTPForLocalStub(t *testing.T) {
+	old := http.DefaultTransport
+	http.DefaultTransport = redirectTransport(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"code":200}`)), Header: make(http.Header)}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = old })
+	for _, checkURL := range []string{"http://127.0.0.1:1234/check", "http://[::1]:1234/check"} {
+		res, err := CheckToken(context.Background(), checkURL, strings.Repeat("x", 32))
+		if err != nil || !res.OK {
+			t.Fatalf("%s: result=%+v err=%v", checkURL, res, err)
+		}
+	}
+}
 
 func TestCredentialsRoundTrip(t *testing.T) {
 	dir := t.TempDir()

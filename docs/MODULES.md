@@ -34,13 +34,13 @@ Steps:
 3. Read DMI sysfs fields (`sys_vendor`, `product_name`, serial, board).
 4. Emit hardware object.
 
-### `packages` (1.4.0)
+### `packages` (1.5.0)
 
 **Goal:** Installed OS packages + source/repo metadata + remediation candidate observation.
 
 Steps:
 
-1. Prefer `dpkg-query -W` on Debian/Ubuntu.
+1. Prefer `dpkg-query -W` on Debian/Ubuntu. Without `dpkg-query`, parse `/var/lib/dpkg/status` directly. Also read distroless Debian `/var/lib/dpkg/status.d/*` (one stanza per file, `*.md5sums` ignored, a stanza without `Status` counts as installed); these records carry `collection_source: dpkg-status.d` in `raw_value`.
 2. Optionally support `rpm -qa` where present. On Alpine, parse `/lib/apk/db/installed` directly (file parse only; no `apk` binary). `o:` (origin) is emitted as `source_package`.
 3. For each package, capture name, version parts, arch, status.
 4. Capture `Source` package when present.
@@ -56,6 +56,8 @@ Important:
 - We never invent `local/dpkg` as a fake repository.
 - Unknown origin stays unknown.
 - Candidate is list observation, not a recommended upgrade command.
+- At most 20000 package records are kept. Reading stops at the cap (the package tool is killed), the module gets `truncated: true`, status `partial` and one error with code `package_limit_truncated`.
+- Zero packages is never a clean result: status `unavailable` with error code `no_packages`. The message says whether no package database was found or a database was found but held no installed packages.
 
 ### `kernel_inventory` (1.1.0)
 
@@ -107,7 +109,7 @@ See [section 12](#12-linux-evidence-chain-listen--package--repo).
 
 See [section 17](#17-loaded-libraries).
 
-### `containers` (1.0.0)
+### `containers` (1.3.0)
 
 See [section 16](#16-containers).
 

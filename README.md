@@ -1,13 +1,14 @@
-# openness-collector
+# OpenNess Vulnerability Scanner: Collector
 
-Local endpoint evidence collector. It reads the machine it runs on and writes one JSON
-evidence file (`.openness`) with the operating system, packages, applications, updates,
-services, processes, listening ports, users, security settings and the links between them.
+`openness-collector` is the local endpoint evidence collector of OpenNess Vulnerability
+Scanner. It reads the machine it runs on and writes one JSON evidence file (`.openness`)
+with the operating system, packages, applications, updates, services, processes, listening
+ports, users, security settings and the links between them.
 
-**Openness project:** [github.com/s4e-io/openness](https://github.com/s4e-io/openness)  
+**OpenNess Vulnerability Scanner:** [github.com/s4e-io/openness](https://github.com/s4e-io/openness)  
 **This repo:** [github.com/s4e-io/openness-collector](https://github.com/s4e-io/openness-collector)
 
-Version: **0.8.0**  
+Version: **0.9.0**  
 Schema: **1.6.0**  
 License: [Apache License 2.0](LICENSE) (open source, developed and maintained by S4E)
 
@@ -33,7 +34,7 @@ use AI at runtime. Project purpose and technical context for contributors:
 - [Upload (optional)](#upload-optional)
 - [Supported platforms](#supported-platforms)
 - [More documentation](#more-documentation)
-- [Openness in S4E](#openness-in-s4e)
+- [OpenNess in S4E](#openness-in-s4e)
 - [License](#license)
 
 ---
@@ -104,6 +105,15 @@ cosign verify-blob --certificate SHA256SUMS.pem --signature SHA256SUMS.sig \
   --certificate-identity-regexp 'https://github.com/s4e-io/openness-collector/\.github/workflows/release\.yml@refs/tags/v.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
 install -m 0755 openness-collector_*_linux_amd64 /usr/local/bin/openness-collector
+```
+
+Every release also carries the same binaries without the version in the name, so a script
+can always fetch the newest one (the `SHA256SUMS` of the release lists both names):
+
+```bash
+curl -fLO https://github.com/s4e-io/openness-collector/releases/latest/download/openness-collector_linux_amd64
+curl -fLO https://github.com/s4e-io/openness-collector/releases/latest/download/SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
 ```
 
 On Windows (PowerShell), compare the hash by hand:
@@ -493,7 +503,7 @@ repository.
 
 ---
 
-## Openness in S4E
+## OpenNess in S4E
 
 Openness is free to run on your own machines. The same collector and resolver power the
 Inside depth of [S4E](https://s4e.io), which adds scheduling, history, multi-host views and

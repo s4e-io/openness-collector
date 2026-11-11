@@ -178,6 +178,28 @@ jobs:
     permissions:
       issues: write
     steps:
+      # Posts to the team's Google Chat space when a scheduled run fails, and once when it is
+      # green again after a failure. Skipped when the OPENNESS_ALERT_WEBHOOK secret is not set.
+      - name: Google Chat alert
+        env:
+          CHAT_WEBHOOK: ${{ secrets.OPENNESS_ALERT_WEBHOOK }}
+          GH_TOKEN: ${{ github.token }}
+          FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          [ -n "${CHAT_WEBHOOK:-}" ] || { echo "no OPENNESS_ALERT_WEBHOOK, skipping"; exit 0; }
+          repo="${GITHUB_REPOSITORY#*/}"
+          open="$(gh issue list -R "$GITHUB_REPOSITORY" --label nightly --state open --json number -q '.[0].number // empty')"
+          if [ "$FAILED" = "true" ]; then
+            text="❌ ${repo} nightly failed on $(date -u +%F): ${RUN}"
+          elif [ -n "$open" ]; then
+            text="✅ ${repo} nightly is green again on $(date -u +%F): ${RUN}"
+          else
+            exit 0
+          fi
+          jq -n --arg t "$text" '{text: $t}' |
+            curl -fsS -X POST -H 'Content-Type: application/json; charset=UTF-8' --data @- "$CHAT_WEBHOOK" >/dev/null
       - name: Open, update or close the nightly issue
         env:
           GH_TOKEN: ${{ github.token }}

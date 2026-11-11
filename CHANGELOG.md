@@ -7,6 +7,36 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-11
+
+### Security
+
+- The collector token is no longer sent on a redirect to another host.
+- Go toolchain 1.26.11: fixes the standard library `net/http` vulnerability GO-2026-6859 that govulncheck reports for 1.26.10.
+
+### Added
+
+- Release files without the version in the name (`openness-collector_<os>_<arch>`), so `releases/latest/download/` links always serve the newest release.
+
+### Fixed
+
+- Timeouts are hard. Every external command runs in its own process group bound to the collection deadline and the whole group is killed on cancel, so a hung helper (for example `rpm --root` inside a container rootfs) can no longer keep the collector waiting. `--timeout` is a global deadline: modules that do not return in time are recorded with error code `timeout`, modules not started yet are recorded the same way, and the evidence collected so far is written as `partial`.
+- `packages` reads distroless Debian `/var/lib/dpkg/status.d/*` on the host, and `containers` reads it in container roots and through `docker cp`.
+- Container package lists were capped at 500 and the `docker cp` fallback dropped the truncation record. The cap is now 20000 per container and a cut is always recorded (`package_limit_truncated`, `packages_truncated`, `package_limit`).
+- A very large package database no longer exhausts memory or fails at write time. Package databases are streamed, collection stops at the record cap and is marked partial, and if the evidence file would still exceed its size limit the largest module is cut (`output_size_truncated`) instead of writing nothing.
+- Runtime errors print only the error, not the full usage text. Flag errors still print usage.
+
+### Added
+
+- `containers` 1.2.0: each container record carries `os_release` (`id`, `id_like`, `name`, `version_id`, `version_codename`, `pretty_name`, `source`, `source_file`) from the image's `/etc/os-release` or `/usr/lib/os-release`, read from the rootfs or through `docker cp` / `podman cp`, so a resolver can select vendor rules for Debian, Ubuntu and RPM-based images. Container dpkg entries also carry `source_package` and `source_version`. Both are additive and optional. See `docs/EVIDENCE.md`.
+
+- `containers` 1.3.0: a container whose package database is present but could not be read (rpm timeout or error, no `rpm` on the host, unreadable dpkg or apk data) carries `packages_error` (`code`, `message`), and the module error uses code `container_packages_unread` instead of `partial`, so a consumer can tell unread packages from an image without a package database. Additive and optional. See `docs/EVIDENCE.md`.
+
+### Changed
+
+- `packages` 1.5.0: zero packages is reported as status `unavailable` with error code `no_packages`, also when a package database exists but is empty. Module results can carry `truncated: true`. See `docs/EVIDENCE.md`.
+- Vulnerability reports go to support@s4e.io. CODEOWNERS is removed, so a pull request does not ask for a second approver.
+
 ## [0.8.0] - 2026-11-04
 
 ### Changed

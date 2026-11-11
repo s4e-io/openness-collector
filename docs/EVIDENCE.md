@@ -78,6 +78,39 @@ Typical record fields:
 - `unavailable`
 - `permission_denied`
 
+### Module limits and truncation
+
+A module result can carry `truncated: true` (omitted when false). It means the module stopped at a record or size limit; the module status is `partial` and its `errors` say why:
+
+| Error code | Module | Meaning |
+|---|---|---|
+| `package_limit_truncated` | `packages`, `containers` | Package records capped (20000 per host or container, 100000 across containers). Container records also get `packages_truncated: true` and `package_limit`. |
+| `output_size_truncated` | any | The evidence file would have exceeded 256 MiB; the module with the most records was cut until it fit. |
+| `timeout` | any | Module timeout or the global `--timeout` was reached. The module status is `error`; the run still writes the evidence collected so far with `collection.status=partial`. |
+| `no_packages` | `packages` | No installed packages were read (status `unavailable`). An empty package list is never reported as `success`. |
+| `container_packages_unread` | `containers` | A container has a package database that could not be read (message `<container id>: <code>[: detail]`). The container record carries `packages_error`. The module status is `partial`. |
+
+### Container records
+
+Each `containers` record describes one container. Fields added in `containers` 1.2.0 and later are optional; a consumer must accept records without them.
+
+| Field | Meaning |
+|---|---|
+| `os_release` | OS identity of the image, read from `/etc/os-release`, else `/usr/lib/os-release`, in the container rootfs or copied out with `docker cp` / `podman cp`. Absent when neither file exists (scratch images) or could not be read. |
+| `os_release.id` | `ID`, lower case (`debian`, `ubuntu`, `rocky`, `alpine`, ...). |
+| `os_release.id_like` | `ID_LIKE`, lower case, space separated. |
+| `os_release.name` | `NAME`. |
+| `os_release.version_id` | `VERSION_ID` (`11`, `22.04`, `9.3`). |
+| `os_release.version_codename` | `VERSION_CODENAME`, lower case (`bullseye`, `jammy`). |
+| `os_release.pretty_name` | `PRETTY_NAME`. |
+| `os_release.source` | `rootfs` or `runtime_cp`: how the file was read. |
+| `os_release.source_file` | The path inside the container that was read. |
+| `packages_error` | Added in `containers` 1.3.0. Present when the container has a package database (rpm, dpkg or apk) that could not be read, so its packages are unknown rather than empty. Absent for images without a package database (scratch, distroless without dpkg data). |
+| `packages_error.code` | `rpm_timeout` (`rpm --root` did not finish before the deadline), `rpm_unavailable` (rpm database present, no `rpm` tool on the host), `package_read_failed` (the tool exited with an error, or a database file could not be opened or parsed). |
+| `packages_error.message` | Short human readable reason. |
+
+Keys missing from the file are left out. dpkg entries in a container's `packages` also carry `source_package` (the dpkg `Source` name, else the binary name) and `source_version` (the version in `Source: name (version)`, else null), like host packages.
+
 ### Relationship confidence labels
 
 When we emit relationships, we label how strong the link is:

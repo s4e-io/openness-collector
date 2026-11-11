@@ -1,8 +1,5 @@
-## What changed?
+**What and why**
 
 
-## Tests
-- [ ] `go test ./...`
+**How it was tested**
 
-## Notes
-No secrets or real `.openness` files in this PR.

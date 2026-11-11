@@ -6,12 +6,12 @@ import (
 	"encoding/hex"
 	"io"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/s4e-io/openness-collector/internal/modules/common"
+	"github.com/s4e-io/openness-collector/internal/procutil"
 	"github.com/s4e-io/openness-collector/internal/schema"
 )
 
@@ -257,7 +257,7 @@ func collectListenSockets(inodeToPID map[uint64]int) []map[string]any {
 }
 
 func dpkgSourceOf(ctx context.Context, pkg string) (string, any) {
-	cmd := exec.CommandContext(ctx, "dpkg-query", "-W", "-f=${Source}", pkg)
+	cmd := procutil.Command(ctx, "dpkg-query", "-W", "-f=${Source}", pkg)
 	b, err := cmd.Output()
 	if err != nil {
 		return pkg, nil
@@ -270,7 +270,7 @@ func dpkgSourceOf(ctx context.Context, pkg string) (string, any) {
 }
 
 func systemdUnitForPID(ctx context.Context, pid int) string {
-	cmd := exec.CommandContext(ctx, "systemctl", "status", strconv.Itoa(pid), "--no-pager", "-n", "0")
+	cmd := procutil.Command(ctx, "systemctl", "status", strconv.Itoa(pid), "--no-pager", "-n", "0")
 	b, _ := cmd.CombinedOutput()
 	for _, line := range strings.Split(string(b), "\n") {
 		line = strings.TrimSpace(line)

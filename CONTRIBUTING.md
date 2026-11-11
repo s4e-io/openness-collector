@@ -42,6 +42,8 @@ bash scripts/build.sh   # optional: cross-platform binaries in dist/
 4. Update README or `docs/` if behavior, CLI flags, or schema changes.
 5. Do **not** commit real credentials, production `.openness` files, or lab secrets.
 
+A pull request does not need a second approver. A maintainer reads it and merges it.
+
 ## Coding guidelines
 
 - Match existing package layout and naming in `internal/`.

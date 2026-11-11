@@ -4,13 +4,13 @@ import (
 	"bufio"
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/s4e-io/openness-collector/internal/modules/common"
+	"github.com/s4e-io/openness-collector/internal/procutil"
 	"github.com/s4e-io/openness-collector/internal/schema"
 )
 
@@ -280,7 +280,7 @@ func countDeleted(libs []map[string]any) int {
 }
 
 func dpkgVersionOf(ctx context.Context, pkg string) string {
-	cmd := exec.CommandContext(ctx, "dpkg-query", "-W", "-f=${Version}", pkg)
+	cmd := procutil.Command(ctx, "dpkg-query", "-W", "-f=${Version}", pkg)
 	b, err := cmd.Output()
 	if err != nil {
 		return ""
