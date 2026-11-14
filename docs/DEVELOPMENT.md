@@ -152,7 +152,7 @@ Do not trust old docs over code.
 - Injected into binaries via `internal/version` ldflags
 - Schema version: `internal/schema/document.go` → `SchemaVersion`
 
-Current values: see `VERSION` and `SchemaVersion` (schema **1.6.0**).
+Current values: see `VERSION` and `SchemaVersion` (schema **1.7.0**).
 
 ### CI and releases
 

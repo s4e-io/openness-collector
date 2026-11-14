@@ -197,6 +197,11 @@ func (c *checker) checkPackages(doc *schema.Document) {
 		missing, extra := setDiff(wantKeys, haveKeys), setDiff(haveKeys, wantKeys)
 		c.check("truth/packages/"+mgr, len(want) == len(have) && len(missing) == 0 && len(extra) == 0,
 			"collector=%d host=%d missing=[%s] extra=[%s]", len(have), len(want), sample(missing, 5), sample(extra, 5))
+		// A manager whose database holds no packages (an empty rpm database on a dpkg
+		// runner) has nothing to name; the count check above already covers it.
+		if len(want) == 0 {
+			continue
+		}
 		var named []string
 		bad := 0
 		for _, name := range knownPackages {

@@ -15,7 +15,7 @@ import (
 type Packages struct{}
 
 func (m *Packages) ID() string          { return "packages" }
-func (m *Packages) Version() string     { return "1.5.0" }
+func (m *Packages) Version() string     { return "1.6.0" }
 func (m *Packages) Platforms() []string { return []string{"linux"} }
 
 func (m *Packages) Run(ctx context.Context) schema.ModuleResult {
@@ -72,7 +72,7 @@ func collectDPKG(ctx context.Context, res *schema.ModuleResult, moduleID string)
 	before := len(res.Evidence)
 	_, err := streamCommandLines(ctx, func(line string) bool {
 		return appendDPKGQueryLine(res, moduleID, line)
-	}, "dpkg-query", "-W", "-f=${Package}\t${Version}\t${Architecture}\t${Status}\t${Source}\n")
+	}, "dpkg-query", "-W", "-f=${Package}\t${Version}\t${Architecture}\t${Status}\t${Source}\t${Maintainer}\n")
 	if err == nil {
 		return
 	}
@@ -112,7 +112,7 @@ func appendDPKGQueryLine(res *schema.ModuleResult, moduleID, line string) bool {
 	if len(parts) > 4 {
 		srcRaw = parts[4]
 	}
-	appendDPKGPackage(res, moduleID, parts[0], parts[1], parts[2], parts[3], srcRaw, "dpkg-query", map[string]string{
+	appendDPKGPackage(res, moduleID, parts[0], parts[1], parts[2], parts[3], srcRaw, get(parts, 5), "dpkg-query", map[string]string{
 		"raw_line":   line,
 		"source_raw": srcRaw,
 	})
@@ -171,7 +171,7 @@ func appendDPKGStanza(res *schema.ModuleResult, moduleID string, fields map[stri
 		status = "install ok installed"
 	}
 	srcRaw := fields["Source"]
-	appendDPKGPackage(res, moduleID, fields["Package"], fields["Version"], arch, status, srcRaw, evidenceSource, map[string]string{
+	appendDPKGPackage(res, moduleID, fields["Package"], fields["Version"], arch, status, srcRaw, fields["Maintainer"], evidenceSource, map[string]string{
 		"source_raw": srcRaw,
 		"status_raw": fields["Status"],
 	})
@@ -186,7 +186,7 @@ func dpkgStatusInstalled(status string) bool {
 	return parts[0] == "install" && parts[2] == "installed"
 }
 
-func appendDPKGPackage(res *schema.ModuleResult, moduleID, name, rawVersion, arch, status, srcRaw, evidenceSource string, raw map[string]string) {
+func appendDPKGPackage(res *schema.ModuleResult, moduleID, name, rawVersion, arch, status, srcRaw, maintainer, evidenceSource string, raw map[string]string) {
 	epoch, ver, rel := ParseDebianVersion(rawVersion)
 	srcName, srcVer := ParseDebianSource(srcRaw)
 	if srcName == "" {
@@ -216,6 +216,7 @@ func appendDPKGPackage(res *schema.ModuleResult, moduleID, name, rawVersion, arc
 		"installed_from_repository": nil,
 		"install_time":              nil,
 		"package_database_path":     "/var/lib/dpkg/status",
+		"origin":                    packageOrigin("", "", maintainer, originBasisDpkgMaintainer),
 	}
 	rels := []map[string]any{}
 	if srcRaw != "" && srcName != "" && srcName != name {
@@ -269,7 +270,7 @@ func rpmDatabasePresent(paths []string) bool {
 }
 
 func collectRPM(ctx context.Context, res *schema.ModuleResult, moduleID string) {
-	format := "%{NAME}\t%{EPOCH}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\t%{VENDOR}\t%{INSTALLTIME}\t%{SOURCERPM}\n"
+	format := "%{NAME}\t%{EPOCH}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\t%{VENDOR}\t%{INSTALLTIME}\t%{SOURCERPM}\t%{PACKAGER}\t%{RSAHEADER:pgpsig}\t%{SIGPGP:pgpsig}\n"
 	_, err := streamCommandLines(ctx, func(line string) bool {
 		return appendRPMLine(res, moduleID, line)
 	}, "rpm", "-qa", "--qf", format)
@@ -327,6 +328,7 @@ func appendRPMLine(res *schema.ModuleResult, moduleID, line string) bool {
 		"repository_label":          nil,
 		"installed_from_repository": nil,
 		"package_database_path":     "/var/lib/rpm",
+		"origin":                    packageOrigin(get(parts, 5), originBasisRPMVendor, get(parts, 8), originBasisRPMPackager),
 	}
 	rels := []map[string]any{}
 	if ok {
@@ -348,6 +350,7 @@ func appendRPMLine(res *schema.ModuleResult, moduleID, line string) bool {
 		})
 	}
 	value["relationships"] = rels
+	setOriginSigningKey(value, get(parts, 9), get(parts, 10))
 	res.Evidence = append(res.Evidence, common.Evidence("native", moduleID, "observed", value, map[string]string{
 		"raw_line":  line,
 		"sourcerpm": srcRPM,
@@ -410,6 +413,7 @@ func appendAPKPackage(res *schema.ModuleResult, moduleID string, p apkPackage, d
 		"installed_from_repository": nil,
 		"install_time":              nil,
 		"package_database_path":     dbPath,
+		"origin":                    packageOrigin("", "", p.Maintainer, originBasisAPKMaintainer),
 	}
 	// The apk origin (o:) is the source package secdb advisories are keyed on.
 	srcRel := map[string]any{
