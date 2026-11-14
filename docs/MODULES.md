@@ -34,7 +34,7 @@ Steps:
 3. Read DMI sysfs fields (`sys_vendor`, `product_name`, serial, board).
 4. Emit hardware object.
 
-### `packages` (1.5.0)
+### `packages` (1.6.0)
 
 **Goal:** Installed OS packages + source/repo metadata + remediation candidate observation.
 
@@ -50,6 +50,7 @@ Steps:
 8. Set `highest_list_version` / `highest_list_origin` from lists (arch-exact; no name-only fallback when arch known).
 9. Set `lists_updated_at` (list file mtimes) and `apt_update_success_at` (periodic stamp) when present.
 10. Emit relationship `package_built_from_source_package` when possible.
+11. Set `origin` on every record (dpkg, rpm, apk): vendor, maintainer, repository URL, signing key id and the `basis` of each. See `docs/EVIDENCE.md`.
 
 Important:
 
@@ -147,7 +148,7 @@ Steps:
 
 ---
 
-### `software_inventory` (1.0.0)
+### `software_inventory` (1.1.0)
 
 Catalog-driven detection of products that package managers describe poorly or
 not at all: database servers, web servers, TLS libraries, SSH, Java runtimes.
@@ -160,7 +161,8 @@ Steps:
 3. For each catalog entry on this platform, collect install candidates from path globs, matching process executables and (Windows) registry keys.
 4. For each candidate, run the entry's `version_readers`: `file_regex` (bounded binary scan), `zip_entry_regex` (jar/zip entry), `dir_names` / `file_regex` patch lists, `registry_value` and `pe_version` on Windows.
 5. Emit one `software_instance` per install path with `version`, `version_source`, all `version_candidates`, `patch_ids`, signals (paths, processes, ports, registry) and `confidence` (`direct` or `presence_only`).
-6. Emit `software_inventory_summary` first (catalog version, counts, caps).
+6. On Linux, ask the package databases which package owns each instance's files, in one lookup for all instances (dpkg file lists, apk installed database, one `rpm -qf`), and set `owner_package` / `owner_package_status`.
+7. Emit `software_inventory_summary` first (catalog version, counts, caps, `owner_managers`).
 
 Honesty:
 
@@ -168,6 +170,7 @@ Honesty:
 - A product seen without a readable version is still reported, with `version: null`, `gap: "version_unreadable"` and `confidence: "presence_only"`.
 - `catalog_verified: false` on an instance means the catalog entry was written from vendor documentation and has not been exercised against a real install (Oracle Database, SQL Server at the time of writing). Treat its readers as unproven.
 - Distro-packaged copies (for example `mysql-server` from apt) are also in `packages`; `software_inventory` adds the non-packaged installs and the version string actually embedded in the binary.
+- `owner_package` is a fact, not a verdict. An instance owned by a package is the same software the `packages` record describes; whether to evaluate it once or twice is the consumer's call. `not_checked` is never reported as `not_owned`.
 - Scope is the host root in this version. Container roots reuse the same detector but are not wired yet (`scopes` in the summary lists what was scanned).
 
 Entity id: `sw:<product_key>:<scope>:<hash(install_path)>` (stable across upgrades; the version is a field).
@@ -329,7 +332,7 @@ Steps:
 
 ---
 
-### `software_inventory` (1.0.0)
+### `software_inventory` (1.1.0)
 
 Same module and catalog as Linux (see 10.15). Windows specifics:
 

@@ -292,6 +292,7 @@ func applyAptOriginToPackage(value map[string]any, idx *aptListsIndex) {
 		value["repository_origin"] = nullIfEmpty(o.Origin)
 		value["repository_label"] = nullIfEmpty(o.Label)
 		value["repository_metadata_status"] = "matched_apt_lists"
+		setOriginRepository(value, firstNonEmpty(o.Origin, o.Label), o.URL)
 		if strings.Contains(strings.ToLower(o.Suite), "security") || strings.Contains(strings.ToLower(o.URL), "security") {
 			value["security_repository"] = true
 		}

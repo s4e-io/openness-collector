@@ -1,6 +1,6 @@
 # The `.openness` evidence file
 
-What a `.openness` file contains, how records are shaped and how integrity is checked. Schema version: **1.6.0**.
+What a `.openness` file contains, how records are shaped and how integrity is checked. Schema version: **1.7.0**.
 
 [Back to README](../README.md)
 
@@ -12,7 +12,7 @@ A `.openness` file is JSON.
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | Document schema (now `1.6.0`) |
+| `schema_version` | Document schema (now `1.7.0`) |
 | `collector` | Tool name, version, build id, osquery version |
 | `collection` | Run id, times, privilege, status, partial flag |
 | `asset` | Hostname, machine id, platform, arch |
@@ -120,6 +120,41 @@ When we emit relationships, we label how strong the link is:
 - `inferred` - best effort, clearly labeled
 
 We do not hide inference.
+
+### Package origin and file ownership (schema 1.7.0)
+
+Two facts with the same shape on every package manager. The collector reports what it observed and does not classify an origin as "distribution" or "third party"; that decision belongs to the consumer.
+
+**`origin`** on every host `packages` record:
+
+```json
+"origin": {
+  "vendor": "Docker",
+  "maintainer": "Containerd team <help@containerd.io>",
+  "repository_url": "https://download.docker.com/linux/ubuntu",
+  "signing_key_id": null,
+  "basis": ["apt_release_origin", "dpkg_maintainer"]
+}
+```
+
+| Field | dpkg | rpm | apk |
+|-------|------|-----|-----|
+| `vendor` | Release `Origin` (else `Label`) of the apt list the installed version matched | `%{VENDOR}` | not recorded |
+| `maintainer` | `Maintainer` | `%{PACKAGER}` | `m:` |
+| `repository_url` | URL of the matched apt list | not recorded | not recorded |
+| `signing_key_id` | not recorded | key id of the package signature, lower case | not recorded |
+
+A field that was not observed is `null`, and `basis` lists only the observations that were made (`apt_release_origin`, `dpkg_maintainer`, `rpm_vendor`, `rpm_packager`, `rpm_signature`, `apk_maintainer`). rpm prints `(none)` for an unset tag; `origin` turns that into `null`. A dpkg package whose installed version is not in the apt lists still carries `maintainer`. Packages from vendor rpm repositories often have neither `Vendor` nor `Packager`; the signing key is then the only origin fact.
+
+**`owner_package`** and **`owner_package_status`** on every `software_instance`:
+
+| `owner_package_status` | Meaning |
+|------------------------|---------|
+| `owned` | A package owns one of the instance's files; `owner_package` is `{manager,name,version,architecture,entity_id,path}` |
+| `not_owned` | The package databases were read and none owns the instance's files; `owner_package` is `null` |
+| `not_checked` | No package database on the host (or not Linux), or the instance has no regular file to ask about; `owner_package` is `null` |
+
+`entity_id` equals the entity id of the same package in `packages`, or `null` when version or architecture could not be read. Only regular files are asked about (path signals and process executables), because packages share directories. The summary record lists the databases that were read in `owner_managers`.
 
 ### Remediation-oriented observation fields (schema 1.4.0)
 

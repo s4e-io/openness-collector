@@ -9,7 +9,7 @@ ports, users, security settings and the links between them.
 **This repo:** [github.com/s4e-io/openness-collector](https://github.com/s4e-io/openness-collector)
 
 Version: **0.9.0**  
-Schema: **1.6.0**  
+Schema: **1.7.0**  
 License: [Apache License 2.0](LICENSE) (open source, developed and maintained by S4E)
 
 The collector does **not** decide if something is vulnerable, does not match CVEs or OVAL,

@@ -7,6 +7,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `packages` 1.6.0: every dpkg, rpm and apk record carries an `origin` object with the same shape (`vendor`, `maintainer`, `repository_url`, `signing_key_id`, `basis`). It says where a package came from without classifying it, so a consumer can tell distribution packages from vendor-repository and local ones. dpkg reads `Maintainer`, rpm reads `Packager` and the signature key id, apk reads the maintainer line.
+- `software_inventory` 1.1.0: every instance carries `owner_package` and `owner_package_status` (`owned`, `not_owned`, `not_checked`), the package that owns the instance's files on dpkg, rpm and apk hosts.
+- Schema 1.7.0 (additive).
+
 ## [0.9.0] - 2026-11-11
 
 ### Security
