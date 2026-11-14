@@ -30,7 +30,7 @@ var dpkgStatusDDir = "/var/lib/dpkg/status.d"
 // dpkgStanzaFields are the only stanza fields the collector reads; others
 // (Description, Conffiles, ...) are skipped without being stored.
 var dpkgStanzaFields = map[string]bool{
-	"Package": true, "Status": true, "Version": true, "Architecture": true, "Source": true,
+	"Package": true, "Status": true, "Version": true, "Architecture": true, "Source": true, "Maintainer": true,
 }
 
 // scanDpkgStanzas streams dpkg status stanzas from r and calls fn for each

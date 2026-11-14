@@ -7,6 +7,23 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `packages` 1.6.0: every dpkg, rpm and apk record carries an `origin` object with the same shape (`vendor`, `maintainer`, `repository_url`, `signing_key_id`, `basis`). It says where a package came from without classifying it, so a consumer can tell distribution packages from vendor-repository and local ones. dpkg reads `Maintainer`, rpm reads `Packager` and the signature key id, apk reads the maintainer line.
+- `software_inventory` 1.1.0: every instance carries `owner_package` and `owner_package_status` (`owned`, `not_owned`, `not_checked`), the package that owns the instance's files on dpkg, rpm and apk hosts.
+- Schema 1.7.0 (additive).
+
+## [0.9.0] - 2026-11-11
+
+### Security
+
+- The collector token is no longer sent on a redirect to another host.
+- Go toolchain 1.26.11: fixes the standard library `net/http` vulnerability GO-2026-6859 that govulncheck reports for 1.26.10.
+
+### Added
+
+- Release files without the version in the name (`openness-collector_<os>_<arch>`), so `releases/latest/download/` links always serve the newest release.
+
 ### Fixed
 
 - Timeouts are hard. Every external command runs in its own process group bound to the collection deadline and the whole group is killed on cancel, so a hung helper (for example `rpm --root` inside a container rootfs) can no longer keep the collector waiting. `--timeout` is a global deadline: modules that do not return in time are recorded with error code `timeout`, modules not started yet are recorded the same way, and the evidence collected so far is written as `partial`.

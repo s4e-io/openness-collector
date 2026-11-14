@@ -56,7 +56,7 @@ func TestParseAPKDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []apkPackage{
-		{Name: "musl", Version: "1.2.5-r0", Arch: "aarch64", Origin: "musl"},
+		{Name: "musl", Version: "1.2.5-r0", Arch: "aarch64", Origin: "musl", Maintainer: "Natanael Copa <ncopa@alpinelinux.org>"},
 		{Name: "libcrypto3", Version: "3.3.2-r0", Arch: "aarch64", Origin: "openssl"},
 		{Name: "busybox", Version: "1.36.1-r29", Arch: "aarch64", Origin: "busybox"},
 		{Name: "local-tool", Version: "0.1", Arch: "noarch"},

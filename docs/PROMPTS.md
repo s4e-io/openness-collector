@@ -69,13 +69,13 @@ If data is missing → `null`, gap flag, or `partial` status. See README §2 and
 
 ---
 
-## `.openness` format (schema 1.6.0)
+## `.openness` format (schema 1.7.0)
 
 Top-level sections (see `internal/schema/document.go`):
 
 | Section | Purpose |
 |---------|---------|
-| `schema_version` | Currently `1.6.0` |
+| `schema_version` | Currently `1.7.0` |
 | `collector` | Name `openness`, version, build id |
 | `collection` | `collection_id`, status, duration, privilege level |
 | `software_inventory` | Catalog-detected products (`software_instance`), 1.5.0+ |
