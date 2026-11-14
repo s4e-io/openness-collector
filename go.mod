@@ -1,6 +1,6 @@
 module github.com/s4e-io/openness-collector
 
-go 1.26.10
+go 1.26.11
 
 require (
 	github.com/pierrec/lz4/v4 v4.1.33

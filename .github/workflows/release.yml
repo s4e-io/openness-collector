@@ -93,10 +93,6 @@ jobs:
           cosign sign-blob --yes \
             --output-signature dist/SHA256SUMS.sig \
             --output-certificate dist/SHA256SUMS.pem \
-            dist/openness-collector_linux_amd64
-            dist/openness-collector_linux_arm64
-            dist/openness-collector_windows_amd64.exe
-            dist/openness-collector_darwin_arm64
             dist/SHA256SUMS
           # Fail the release if the just-produced signature does not verify.
           cosign verify-blob \
@@ -117,6 +113,10 @@ jobs:
             dist/openness-collector_${{ steps.ver.outputs.version }}_linux_arm64
             dist/openness-collector_${{ steps.ver.outputs.version }}_windows_amd64.exe
             dist/openness-collector_${{ steps.ver.outputs.version }}_darwin_arm64
+            dist/openness-collector_linux_amd64
+            dist/openness-collector_linux_arm64
+            dist/openness-collector_windows_amd64.exe
+            dist/openness-collector_darwin_arm64
             dist/SHA256SUMS
             dist/SHA256SUMS.sig
             dist/SHA256SUMS.pem

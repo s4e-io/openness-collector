@@ -6,7 +6,7 @@ import (
 	"github.com/s4e-io/openness-collector/internal/version"
 )
 
-const SchemaVersion = "1.6.0"
+const SchemaVersion = "1.7.0"
 const CollectorName = "openness"
 
 // CollectorVersion follows internal/version (ldflags / VERSION file).
