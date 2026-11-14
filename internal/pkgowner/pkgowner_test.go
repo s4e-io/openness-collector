@@ -1,3 +1,8 @@
+//go:build !windows
+
+// Package databases are Linux facts and dpkg list names contain a colon,
+// which is not a valid file name on Windows.
+
 package pkgowner
 
 import (
