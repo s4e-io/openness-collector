@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/s4e-io/openness-collector/internal/modules/common"
+	"github.com/s4e-io/openness-collector/internal/pkgowner"
 	"github.com/s4e-io/openness-collector/internal/schema"
 )
 
@@ -28,7 +29,7 @@ const (
 type SoftwareInventory struct{}
 
 func (m *SoftwareInventory) ID() string          { return "software_inventory" }
-func (m *SoftwareInventory) Version() string     { return "1.0.0" }
+func (m *SoftwareInventory) Version() string     { return "1.1.0" }
 func (m *SoftwareInventory) Platforms() []string { return []string{"linux", "windows"} }
 
 type procInfo struct {
@@ -55,6 +56,10 @@ type instance struct {
 	versions    []versionHit
 	patches     []string
 	patchSource string
+	// owner is the package that owns one of the instance's files; ownerStatus
+	// says whether ownership was checked (see the ownerStatus constants).
+	owner       *pkgowner.Owner
+	ownerStatus string
 }
 
 func (m *SoftwareInventory) Run(ctx context.Context) schema.ModuleResult {
@@ -98,6 +103,8 @@ func (m *SoftwareInventory) Run(ctx context.Context) schema.ModuleResult {
 		}
 	}
 
+	managers := resolveOwners(ctx, goos, "/", all)
+
 	counts := map[string]int{}
 	for _, in := range all {
 		counts[in.product.ProductKey]++
@@ -114,6 +121,7 @@ func (m *SoftwareInventory) Run(ctx context.Context) schema.ModuleResult {
 		"scopes":             []string{"host"},
 		"processes_observed": len(procs),
 		"ports_observed":     len(ports),
+		"owner_managers":     managers,
 		"truncated":          truncated,
 		"notes":              notes,
 	}
@@ -372,7 +380,9 @@ func (in instance) value() map[string]any {
 			"ports":     ports,
 			"registry":  regs,
 		},
-		"catalog_verified": len(in.product.Verified) > 0,
+		"catalog_verified":     len(in.product.Verified) > 0,
+		"owner_package":        in.ownerValue(),
+		"owner_package_status": in.ownerStatusValue(),
 	}
 }
 

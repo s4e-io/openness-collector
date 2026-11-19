@@ -278,3 +278,63 @@ func TestOwnedPorts(t *testing.T) {
 		t.Fatalf("unknown owner is not attributed: %v", got)
 	}
 }
+
+func TestResolveOwners(t *testing.T) {
+	bin := t.TempDir()
+	owned := filepath.Join(bin, "usr/sbin/nginx")
+	loose := filepath.Join(bin, "opt/handmade/postgres")
+	for _, p := range []string{owned, loose} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root := t.TempDir()
+	info := filepath.Join(root, "var/lib/dpkg/info")
+	if err := os.MkdirAll(info, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(info, "nginx-core.list"), []byte(owned+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	status := "Package: nginx-core\nStatus: install ok installed\nArchitecture: amd64\nVersion: 1.24.0-2\n\n"
+	if err := os.WriteFile(filepath.Join(root, "var/lib/dpkg/status"), []byte(status), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	all := []instance{
+		{paths: []string{filepath.Dir(owned), owned}},
+		{procs: []procInfo{{PID: 1, Name: "postgres", Exe: loose}}},
+		{installPath: "process:ghost"},
+	}
+	managers := resolveOwners(context.Background(), "linux", root, all)
+	if len(managers) != 1 || managers[0] != "dpkg" {
+		t.Fatalf("managers = %v", managers)
+	}
+	if all[0].ownerStatus != ownerOwned || all[0].owner == nil || all[0].owner.EntityID() != "pkg:dpkg:nginx-core:amd64:1.24.0-2" {
+		t.Fatalf("owned instance = %+v %+v", all[0].ownerStatus, all[0].owner)
+	}
+	if all[1].ownerStatus != ownerNotOwned || all[1].owner != nil {
+		t.Fatalf("loose instance = %+v", all[1].ownerStatus)
+	}
+	// No file to ask about: not checked, never reported as unowned.
+	if all[2].ownerStatus != ownerNotChecked {
+		t.Fatalf("fileless instance = %+v", all[2].ownerStatus)
+	}
+	v := all[0].value()
+	if v["owner_package_status"] != ownerOwned || v["owner_package"] == nil {
+		t.Fatalf("value = %#v", v)
+	}
+
+	// No package database at all, and non-Linux hosts: not checked.
+	none := []instance{{paths: []string{owned}}}
+	if m := resolveOwners(context.Background(), "linux", t.TempDir(), none); len(m) != 0 || none[0].ownerStatus != ownerNotChecked {
+		t.Fatalf("no db: %v %v", m, none[0].ownerStatus)
+	}
+	win := []instance{{paths: []string{owned}}}
+	if resolveOwners(context.Background(), "windows", root, win); win[0].ownerStatus != ownerNotChecked {
+		t.Fatalf("windows: %v", win[0].ownerStatus)
+	}
+}

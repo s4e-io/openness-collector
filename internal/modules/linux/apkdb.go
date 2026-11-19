@@ -13,6 +13,8 @@ type apkPackage struct {
 	Version string // V: full apk version, e.g. 1.2.5-r1
 	Arch    string // A:
 	Origin  string // o: source (origin) package name, may be empty
+	// Maintainer is the m: line, may be empty.
+	Maintainer string
 }
 
 // parseAPKDB parses an apk installed database. Stanzas are separated by blank
@@ -52,6 +54,8 @@ func parseAPKDB(r io.Reader, limit int) ([]apkPackage, error) {
 			cur.Arch = v
 		case 'o':
 			cur.Origin = v
+		case 'm':
+			cur.Maintainer = v
 		}
 	}
 	flush()

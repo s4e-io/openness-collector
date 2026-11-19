@@ -3,10 +3,10 @@ package linux
 import (
 	"context"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/s4e-io/openness-collector/internal/pkgowner"
 	"github.com/s4e-io/openness-collector/internal/procutil"
 )
 
@@ -135,39 +135,7 @@ func PackageOwner(ctx context.Context, path string) map[string]any {
 }
 
 func ownershipPathCandidates(path string) []string {
-	seen := map[string]bool{}
-	var out []string
-	add := func(p string) {
-		p = strings.TrimSpace(p)
-		if p == "" || seen[p] {
-			return
-		}
-		seen[p] = true
-		out = append(out, p)
-	}
-	add(path)
-	// In-process symlink resolution: no helper process that could hang.
-	if r, err := filepath.EvalSymlinks(path); err == nil {
-		add(r)
-	}
-	// /usr-merge twins
-	twins := [][2]string{
-		{"/bin/", "/usr/bin/"},
-		{"/sbin/", "/usr/sbin/"},
-		{"/lib/", "/usr/lib/"},
-		{"/lib64/", "/usr/lib64/"},
-	}
-	for _, base := range append([]string{}, out...) {
-		for _, t := range twins {
-			if strings.HasPrefix(base, t[0]) {
-				add(t[1] + strings.TrimPrefix(base, t[0]))
-			}
-			if strings.HasPrefix(base, t[1]) {
-				add(t[0] + strings.TrimPrefix(base, t[1]))
-			}
-		}
-	}
-	return out
+	return pkgowner.PathCandidates(path)
 }
 
 // parseAptPolicy parses `apt-cache policy` text. Kept for unit tests and any
