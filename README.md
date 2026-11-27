@@ -6,7 +6,8 @@ with the operating system, packages, applications, updates, services, processes,
 ports, users, security settings and the links between them.
 
 **OpenNess Vulnerability Scanner:** [github.com/s4e-io/openness](https://github.com/s4e-io/openness)  
-**This repo:** [github.com/s4e-io/openness-collector](https://github.com/s4e-io/openness-collector)
+**This repo:** [github.com/s4e-io/openness-collector](https://github.com/s4e-io/openness-collector)  
+**Website and desktop app:** [getopenness.com](https://getopenness.com)
 
 Version: **0.10.0**  
 Schema: **1.7.0**  
