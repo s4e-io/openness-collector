@@ -20,6 +20,7 @@ func runPowerShell(ctx context.Context, script string) (string, error) {
 		return "", err
 	}
 	cmd := procutil.Command(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+	cmd.Env = powerShellEnv()
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
@@ -63,6 +64,7 @@ func probePowerShellMajor(ctx context.Context) (int, error) {
 	defer cancel()
 	cmd := procutil.Command(pctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
 		"if ($PSVersionTable) { $PSVersionTable.PSVersion.Major } else { 1 }")
+	cmd.Env = powerShellEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		return 0, err
